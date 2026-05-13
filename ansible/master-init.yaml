@@ -1,41 +1,41 @@
-- name: Kubernetes 클러스터 마스터 노드 초기화
+- name: Kubernetesクラスタのマスターノードの初期化
   hosts: main-master
   become: true
   tasks:
-    - name: containerd 서비스 시작 및 활성화
+    - name: containerdサービスの開始と有効化
       ansible.builtin.systemd:
         name: containerd
         state: started
         enabled: true
 
-    - name: Kubernetes 설정 디렉터리 생성
+    - name: Kubernetesの設定ディレクトリを作成
       ansible.builtin.file:
         path: /etc/kubernetes
         state: directory
         mode: "0755"
       become: true
 
-    - name: kubeadm 설정 파일을 템플릿에서 생성
+    - name: kubeadmの設定ファイルをテンプレートから生成
       ansible.builtin.template:
         src: ./configuration/kubeadm-config.yaml.j2
         dest: /etc/kubernetes/kubeadm-config.yaml
         mode: "0644"
 
-    - name: kubeadm init 명령 실행
+    - name: kubeadm initコマンドの実行
       ansible.builtin.shell: |
         kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs
       register: init_output
       args:
         creates: /etc/kubernetes/admin.conf
 
-    - name: kubectl을 위한 kubeconfig 설정
+    - name: kubectlのためのkubeconfig設定
       ansible.builtin.file:
         path: /home/ec2-user/.kube
         state: directory
         mode: "0755"
         owner: ec2-user
 
-    - name: config 파일 복사
+    - name: configファイルのコピー
       ansible.builtin.copy:
         src: /etc/kubernetes/admin.conf
         dest: /home/ec2-user/.kube/config

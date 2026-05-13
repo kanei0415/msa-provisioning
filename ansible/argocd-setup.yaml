@@ -1,23 +1,23 @@
-- name: ArgoCD 셋업
+- name: ArgoCD セットアップ
   hosts: main-master
   become: false
   tasks:
-    - name: ArgoCD용 Namespace 생성
+    - name: ArgoCD用のNamespace作成
       kubernetes.core.k8s:
         name: "argocd"
         kind: Namespace
         state: present
         kubeconfig: /home/ec2-user/.kube/config
 
-    - name: ArgoCD Helm 리포지토리 추가
+    - name: ArgoCD Helm レポジトリ追加
       kubernetes.core.helm_repository:
         name: argo
         repo_url: "https://argoproj.github.io/argo-helm"
 
-    - name: Helm 리포지토리 업데이트
+    - name: Helm レポジトリ更新
       command: helm repo update
 
-    - name: LBC Webhook 설정 삭제
+    - name: LBCのWebhook設定削除
       shell: |
         kubectl delete mutatingwebhookconfigurations mservice.elbv2.k8s.aws --ignore-not-found
         kubectl delete validatingwebhookconfigurations vservice.elbv2.k8s.aws --ignore-not-found
@@ -25,7 +25,7 @@
         KUBECONFIG: /home/ec2-user/.kube/config
       ignore_errors: yes
 
-    - name: ArgoCD 설치
+    - name: ArgoCD インストール
       kubernetes.core.helm:
         name: argocd
         chart_ref: argo/argo-cd
@@ -41,7 +41,7 @@
             extraArgs:
               - --insecure
 
-    - name: CRD 존재 확인
+    - name: CRDの存在確認
       kubernetes.core.k8s_info:
         kind: CustomResourceDefinition
         name: applications.argoproj.io
@@ -50,18 +50,27 @@
       retries: 10
       delay: 5
 
-    # R-32: 팀장님 개인 레포(kanei0415/ktcloud-k8s-argocd-manifest)에서
-    # 우리 팀 매니페스트 레포(KTCloud-CloudNative-Troica-Team/msa-argocd-manifest)로 전환.
-    # inline yaml 정의 대신 매니페스트 레포의 bootstrap/root-app.yaml을 fetch + apply →
-    # 단일 진실의 원천 유지 (root-app spec 변경 시 ansible 재실행 불필요, ArgoCD가 자동 sync).
-    - name: 매니페스트 레포의 root-app.yaml 다운로드
-      ansible.builtin.get_url:
-        url: https://raw.githubusercontent.com/KTCloud-CloudNative-Troica-Team/msa-argocd-manifest/main/bootstrap/root-app.yaml
-        dest: /tmp/root-app.yaml
-        mode: "0644"
-
-    - name: ArgoCD root Application 생성 (app-of-apps 진입점)
+    - name: ArgoCD root Applicationの作成
       kubernetes.core.k8s:
         state: present
-        src: /tmp/root-app.yaml
-        kubeconfig: /home/ec2-user/.kube/config
+        definition:
+          apiVersion: argoproj.io/v1alpha1
+          kind: Application
+          metadata:
+            name: root-app
+            namespace: argocd
+          spec:
+            project: default
+            source:
+              repoURL: https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git
+              targetRevision: HEAD
+              path: Setup
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: default
+            syncPolicy:
+              automated:
+                prune: true
+                selfHeal: true
+              syncOptions:
+                - CreateNamespace=true

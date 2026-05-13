@@ -14,7 +14,3 @@
 - import_playbook: nlb-setup.yaml
 
 - import_playbook: argocd-setup.yaml
-
-# Phase 0 — kubelet이 ECR private 레포에서 image pull 받을 수 있도록 credential provider 설정.
-# 클러스터 전체 ready 후 적용 (kubelet 재시작이 노드별로 발생).
-- import_playbook: ecr-credential-provider-setup.yaml

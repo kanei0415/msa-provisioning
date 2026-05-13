@@ -1,4 +1,4 @@
-- name: AWS Load Balancer Controller 설치
+- name: AWS Load Balancer Controller設置
   hosts: main-master
   become: true
   vars:
@@ -7,15 +7,15 @@
     lbc_namespace: "kube-system"
 
   tasks:
-    - name: EKS Helm 리포지토리 추가
+    - name: EKS Helmリポジトリの追加
       kubernetes.core.helm_repository:
         name: eks
         repo_url: "https://aws.github.io/eks-charts"
 
-    - name: Helm 리포지토리 업데이트
+    - name: Helmリポジトリの更新
       command: helm repo update
 
-    - name: AWS Load Balancer Controller 설치
+    - name: AWS Load Balancer Controllerのインストール
       kubernetes.core.helm:
         name: aws-load-balancer-controller
         chart_ref: eks/aws-load-balancer-controller

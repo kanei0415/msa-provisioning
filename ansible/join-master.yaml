@@ -1,30 +1,30 @@
-- name: Kubernetes 클러스터 마스터 노드 Join 정보 취득
+- name: KubernetesクラスタのマスターノードのJoin情報の取得
   hosts: main-master
   become: true
   tasks:
-    - name: 인증서 키 생성
+    - name: 証明書キーの生成
       ansible.builtin.shell: kubeadm init phase upload-certs --upload-certs | tail -n 1
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
       register: cert_key_raw
 
-    - name: Join 명령 생성
+    - name: Joinコマンドの生成
       ansible.builtin.shell: kubeadm token create --print-join-command
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
       register: join_cmd_raw
 
-    - name: Join 명령과 인증서 키를 공유할 가상 호스트 추가
+    - name: Joinコマンドと証明書キーの共有用ホストの追加
       ansible.builtin.add_host:
         name: "K8S_VARS_HOLDER"
         shared_join_cmd: "{{ join_cmd_raw.stdout | trim }}"
         shared_cert_key: "{{ cert_key_raw.stdout | trim }}"
 
-- name: Kubernetes 클러스터 마스터 노드 Join
+- name: KubernetesクラスタのマスターノードのJoin
   hosts: ap-northeast-2a-masters
   become: true
   tasks:
-    - name: Join 명령 실행
+    - name: Joinコマンドの実行
       ansible.builtin.shell: >
         {{ hostvars['K8S_VARS_HOLDER']['shared_join_cmd'] }} --control-plane
         --certificate-key {{ hostvars['K8S_VARS_HOLDER']['shared_cert_key'] }}

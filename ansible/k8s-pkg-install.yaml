@@ -1,8 +1,8 @@
-- name: Kubernetes 패키지 설치
+- name: Kubernetesパッケージのインストール
   hosts: all
   become: true
   tasks:
-    - name: Kubernetes 리포지토리 추가
+    - name: Kubernetesリポジトリの追加
       ansible.builtin.copy:
         dest: /etc/yum.repos.d/kubernetes.repo
         mode: "0644"
@@ -14,11 +14,11 @@
           gpgcheck=1
           gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
 
-    - name: dnf 캐시 정리
+    - name: dnfキャッシュのクリア
       ansible.builtin.shell: dnf clean all
       become: true
 
-    - name: kubelet, kubeadm, kubectl 설치
+    - name: kubelet、kubeadm、kubectlのインストール
       ansible.builtin.dnf:
         name:
           - kubelet
@@ -26,7 +26,7 @@
           - kubectl
         state: present
 
-    - name: kubelet 서비스 활성화
+    - name: kubeletサービスの有効化
       ansible.builtin.systemd:
         name: kubelet
         enabled: true

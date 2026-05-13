@@ -10,8 +10,6 @@ resource "local_file" "ansible_inventory" {
     ap-northeast-2b-worker-node-02 = aws_instance.ap-northeast-2b-worker-node-02.private_ip
     ktcloud-nlb-ip                 = aws_lb.kt-cloud-nlb.dns_name
     vpc_id                         = aws_vpc.kt-cloud-vpc.id
-    aws_account_id                 = data.aws_caller_identity.current.account_id
-    aws_region                     = var.region
   })
   filename = "${path.module}/../ansible/inventory.ini"
 }

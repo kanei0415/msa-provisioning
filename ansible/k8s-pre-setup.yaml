@@ -1,12 +1,12 @@
-- name: Kubernetes 클러스터 사전 조건 설정
+- name: Kubernetesクラスタの前提条件の設定
   hosts: all
   become: true
   tasks:
-    - name: 스왑 비활성화
+    - name: スワップの無効化
       ansible.builtin.command: swapoff -a
       when: ansible_swaptotal_mb > 0
 
-    - name: 커널 모듈 로드
+    - name: カーネルモジュールのロード
       modprobe:
         name: "{{ item }}"
         state: present
@@ -14,13 +14,13 @@
         - overlay
         - br_netfilter
 
-    - name: 브리지 네트워크 설정 적용
+    - name: ブリッジネットワーク設定の適用
       ansible.builtin.sysctl:
         name: net.bridge.bridge-nf-call-iptables
         value: "1"
         state: present
 
-    - name: /etc/hosts 파일에 마스터 노드 항목 추가
+    - name: /etc/hostsファイルにマスターノードのエントリを追加
       lineinfile:
         path: /etc/hosts
         line: "{{ item.ip }} {{ item.name }}"

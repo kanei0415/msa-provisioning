@@ -1,4 +1,4 @@
-- name: Helm 셋업
+- name: Helmのセットアップ
   hosts: main-master
   become: true
   vars:
@@ -6,19 +6,19 @@
     arch: "amd64"
 
   tasks:
-    - name: Helm 설치
+    - name: Helmのインストール
       unarchive:
         src: "https://get.helm.sh/helm-{{ helm_version }}-linux-{{ arch }}.tar.gz"
         dest: /tmp
         remote_src: true
 
-    - name: Helm 바이너리를 /usr/local/bin에 복사
+    - name: Helmバイナリを/usr/local/binにコピー
       copy:
         src: "/tmp/linux-{{ arch }}/helm"
         dest: /usr/local/bin/helm
         mode: "0755"
         remote_src: true
 
-    - name: Helm 설치 확인
+    - name: Helmのインストール確認
       command: helm version
       register: helm_result
