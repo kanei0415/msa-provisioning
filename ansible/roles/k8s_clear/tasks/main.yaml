@@ -1,0 +1,40 @@
+---
+- name: kubeadm reset の実行
+  ansible.builtin.command: >
+    kubeadm reset -f
+    --cri-socket {{ containerd_cri_socket }}
+  register: kubeadm_reset_result
+  failed_when:
+    - kubeadm_reset_result.rc != 0
+    - "'not exists' not in kubeadm_reset_result.stderr"
+  changed_when: kubeadm_reset_result.rc == 0
+
+- name: Kubernetes 関連ディレクトリの削除
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/kubernetes/
+    - /var/lib/etcd/
+    - /var/lib/kubelet/
+    - /etc/cni/net.d/
+    - /var/lib/cni/
+
+- name: ec2-user の kubeconfig ディレクトリ削除
+  ansible.builtin.file:
+    path: "/home/{{ ec2_user }}/.kube/"
+    state: absent
+
+- name: CNI 仮想インタフェースの削除
+  ansible.builtin.command: "ip link delete {{ item }}"
+  loop:
+    - cni0
+    - flannel.1
+  register: ip_link_delete
+  failed_when: false
+  changed_when: ip_link_delete.rc == 0
+
+- name: containerd の再起動
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted

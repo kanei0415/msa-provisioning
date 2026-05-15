@@ -1,0 +1,30 @@
+---
+kubernetes_version: "1.30"
+pod_subnet: "192.168.0.0/16"
+
+containerd_cri_socket: "unix:///var/run/containerd/containerd.sock"
+
+ec2_user: "ec2-user"
+kubeconfig_path: "/home/ec2-user/.kube/config"
+admin_conf_path: "/etc/kubernetes/admin.conf"
+
+calico_version: "v3.27.0"
+
+helm_version: "v3.14.0"
+
+argocd_namespace: "argocd"
+argocd_root_app_repo: "https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git"
+argocd_root_app_path: "Setup"
+argocd_root_path: "/argocd"
+
+aws_region: "ap-northeast-2"
+cluster_name: "kt-cloud-cluster"
+aws_lbc_namespace: "kube-system"
+
+deploy_traefik: false
+traefik_namespace: "traefik"
+
+master_hosts_entries:
+  - { ip_var: "a_master_01_private_ip", name: "ap-northeast-2a-master-01" }
+  - { ip_var: "a_master_02_private_ip", name: "ap-northeast-2a-master-02" }
+  - { ip_var: "b_master_01_private_ip", name: "ap-northeast-2b-master-01" }

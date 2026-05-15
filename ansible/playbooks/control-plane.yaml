@@ -1,0 +1,18 @@
+---
+- name: main-master の初期化と CNI 適用
+  hosts: main-master
+  become: true
+  roles:
+    - role: kubeadm_init
+      tags: [kubeadm, init]
+    - role: k8s_python
+      tags: [python]
+    - role: cni_calico
+      tags: [cni, calico]
+
+- name: 2a masters を control-plane として join
+  hosts: ap-northeast-2a-masters
+  become: true
+  roles:
+    - role: kubeadm_join_master
+      tags: [join, masters]

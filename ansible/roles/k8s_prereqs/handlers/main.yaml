@@ -1,0 +1,8 @@
+---
+- name: reload kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter

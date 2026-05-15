@@ -1,0 +1,15 @@
+---
+profile: production
+
+exclude_paths:
+  - .ansible_cache/
+  - .cache/
+
+skip_list:
+  - name[casing]
+  - name[play]
+  - yaml[line-length]
+  - var-naming[no-role-prefix]
+warn_list:
+  - experimental
+  - risky-shell-pipe

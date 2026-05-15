@@ -1,0 +1,29 @@
+---
+- name: Kubernetes 公式 yum リポジトリの登録
+  ansible.builtin.yum_repository:
+    name: kubernetes
+    description: Kubernetes
+    baseurl: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/rpm/"
+    gpgkey: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/rpm/repodata/repomd.xml.key"
+    gpgcheck: true
+    enabled: true
+    file: kubernetes
+    mode: "0644"
+  notify: clean dnf cache
+
+- name: dnf キャッシュの即時更新（リポジトリ追加直後）
+  ansible.builtin.meta: flush_handlers
+
+- name: kubelet / kubeadm / kubectl のインストール
+  ansible.builtin.dnf:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    disable_excludes: kubernetes
+
+- name: kubelet サービスの有効化（起動は join 後）
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true

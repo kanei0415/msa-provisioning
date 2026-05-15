@@ -22,3 +22,5 @@ id_rsa*
 ansible/inventory.ini
 
 .env
+
+.claude

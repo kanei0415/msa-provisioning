@@ -1,0 +1,29 @@
+---
+- name: Join 用 token を main-master で生成し worker に配布
+  delegate_to: "{{ groups['main-master'][0] }}"
+  run_once: true
+  become: true
+  block:
+    - name: kubeadm token create で join コマンド生成
+      ansible.builtin.command: kubeadm token create --print-join-command
+      environment:
+        KUBECONFIG: "{{ admin_conf_path }}"
+      register: worker_join_cmd_raw
+      changed_when: false
+
+    - name: worker 全台に join コマンドを fact として配布
+      ansible.builtin.set_fact:
+        worker_join_cmd: "{{ worker_join_cmd_raw.stdout | trim }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['ap-northeast-2a-workers'] | union(groups['ap-northeast-2b-workers']) }}"
+
+- name: kubeadm join の実行（worker）
+  ansible.builtin.shell: >
+    {{ worker_join_cmd }}
+    --cri-socket {{ containerd_cri_socket }}
+  register: worker_join_result
+  failed_when:
+    - worker_join_result.rc != 0
+    - "'already exists' not in worker_join_result.stderr"
+  changed_when: "'already exists' not in worker_join_result.stderr"

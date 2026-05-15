@@ -1,0 +1,33 @@
+---
+- name: containerd のインストール
+  ansible.builtin.dnf:
+    name: containerd
+    state: present
+
+- name: containerd の設定ディレクトリ作成
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: containerd デフォルト config の生成（初回のみ）
+  ansible.builtin.shell: |
+    set -o pipefail
+    containerd config default > /etc/containerd/config.toml
+  args:
+    executable: /bin/bash
+    creates: /etc/containerd/config.toml
+  notify: restart containerd
+
+- name: SystemdCgroup を true に切り替え
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: restart containerd
+
+- name: containerd の起動と有効化
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true

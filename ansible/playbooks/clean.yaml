@@ -1,0 +1,7 @@
+---
+- name: クラスタの teardown
+  hosts: all
+  become: true
+  roles:
+    - role: k8s_clear
+      tags: [clean]

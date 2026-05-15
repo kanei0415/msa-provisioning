@@ -195,3 +195,8 @@ argocd app get argocd/root-app
 
 argocd app sync root-app --prune
 ```
+
+### Finalizer
+```terminal
+kubectl get ns argocd -o json | jq '.spec.finalizers = []' | kubectl replace --raw "/api/v1/namespaces/argocd/finalize" -f -
+```

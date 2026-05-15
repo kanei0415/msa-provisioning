@@ -1,0 +1,15 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: "v{{ kubernetes_version }}.0"
+controlPlaneEndpoint: "{{ nlb_dns_name }}:6443"
+networking:
+  podSubnet: "{{ pod_subnet }}"
+apiServer:
+  certSANs:
+    - "{{ nlb_dns_name }}"
+    - "{{ ansible_default_ipv4.address }}"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd

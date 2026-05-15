@@ -1,0 +1,16 @@
+---
+- name: Calico マニフェストのダウンロード（リトライ付き）
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml"
+    dest: "/tmp/calico-{{ calico_version }}.yaml"
+    mode: "0644"
+  register: calico_manifest_dl
+  retries: 3
+  delay: 5
+  until: calico_manifest_dl is succeeded
+
+- name: Calico の適用
+  kubernetes.core.k8s:
+    state: present
+    src: "/tmp/calico-{{ calico_version }}.yaml"
+    kubeconfig: "{{ kubeconfig_path }}"

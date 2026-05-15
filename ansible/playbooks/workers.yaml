@@ -1,0 +1,7 @@
+---
+- name: worker ノードを cluster に join
+  hosts: ap-northeast-2a-workers:ap-northeast-2b-workers
+  become: true
+  roles:
+    - role: kubeadm_join_worker
+      tags: [join, workers]

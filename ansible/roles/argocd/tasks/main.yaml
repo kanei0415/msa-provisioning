@@ -1,0 +1,81 @@
+---
+- name: ArgoCD Namespace の作成
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ argocd_namespace }}"
+
+- name: ArgoCD Helm リポジトリの登録
+  kubernetes.core.helm_repository:
+    name: argo
+    repo_url: "https://argoproj.github.io/argo-helm"
+    state: present
+
+- name: LBC の Webhook 設定削除（残骸対策）
+  kubernetes.core.k8s:
+    state: absent
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: admissionregistration.k8s.io/v1
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+  loop:
+    - { kind: MutatingWebhookConfiguration, name: mservice.elbv2.k8s.aws }
+    - { kind: ValidatingWebhookConfiguration, name: vservice.elbv2.k8s.aws }
+  failed_when: false
+
+- name: ArgoCD のインストール
+  kubernetes.core.helm:
+    name: argocd
+    chart_ref: argo/argo-cd
+    release_namespace: "{{ argocd_namespace }}"
+    kubeconfig: "{{ kubeconfig_path }}"
+    create_namespace: true
+    update_repo_cache: true
+    wait: true
+    values:
+      server:
+        service:
+          type: ClusterIp
+        extraArgs:
+          - "--rootpath={{ argocd_root_path }}"
+          - "--insecure"
+
+- name: ArgoCD CRD が登録されるまで待機
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: CustomResourceDefinition
+    name: applications.argoproj.io
+  register: crd_info
+  until: crd_info.resources | length > 0
+  retries: 12
+  delay: 5
+
+- name: ArgoCD root Application の作成
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: root-app
+        namespace: "{{ argocd_namespace }}"
+      spec:
+        project: default
+        source:
+          repoURL: "{{ argocd_root_app_repo }}"
+          targetRevision: HEAD
+          path: "{{ argocd_root_app_path }}"
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: default
+        syncPolicy:
+          automated:
+            prune: true
+            selfHeal: true
+          syncOptions:
+            - CreateNamespace=true

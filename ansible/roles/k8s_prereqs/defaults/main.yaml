@@ -1,0 +1,3 @@
+---
+# group_vars/all.yaml で上書きされる前提のデフォルト値
+master_hosts_entries: []

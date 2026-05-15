@@ -1,0 +1,14 @@
+---
+# kubernetes.core モジュールを master ノード側で動かすために必要
+- name: python3-pip のインストール
+  ansible.builtin.dnf:
+    name: python3-pip
+    state: present
+
+- name: kubernetes / PyYAML の pip インストール
+  ansible.builtin.pip:
+    name:
+      - kubernetes
+      - PyYAML
+    executable: pip3
+    state: present

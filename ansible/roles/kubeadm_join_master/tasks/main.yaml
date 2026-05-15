@@ -1,0 +1,43 @@
+---
+- name: Join 用の cert-key / join コマンドを main-master で生成し対象 master に配布
+  delegate_to: "{{ groups['main-master'][0] }}"
+  run_once: true
+  become: true
+  block:
+    - name: cert-key を upload-certs フェーズで生成
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubeadm init phase upload-certs --upload-certs | tail -n 1
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: "{{ admin_conf_path }}"
+      register: cert_key_raw
+      changed_when: false
+
+    - name: kubeadm token create で join コマンドを生成
+      ansible.builtin.command: kubeadm token create --print-join-command
+      environment:
+        KUBECONFIG: "{{ admin_conf_path }}"
+      register: join_cmd_raw
+      changed_when: false
+
+    - name: 対象 master に cert-key と join コマンドを fact として配布
+      ansible.builtin.set_fact:
+        shared_join_cmd: "{{ join_cmd_raw.stdout | trim }}"
+        shared_cert_key: "{{ cert_key_raw.stdout | trim }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['ap-northeast-2a-masters'] }}"
+
+- name: control-plane として join（2a masters）
+  throttle: 1
+  ansible.builtin.shell: >
+    {{ shared_join_cmd }} --control-plane
+    --certificate-key {{ shared_cert_key }}
+    --cri-socket {{ containerd_cri_socket }}
+  register: master_join_result
+  failed_when:
+    - master_join_result.rc != 0
+    - "'already exists' not in master_join_result.stderr"
+  changed_when: "'already exists' not in master_join_result.stderr"

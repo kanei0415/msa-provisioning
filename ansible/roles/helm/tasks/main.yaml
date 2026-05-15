@@ -1,0 +1,37 @@
+---
+- name: 現在の helm バージョンを取得
+  ansible.builtin.command: helm version --short --client
+  register: current_helm
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: helm を必要時のみ取得・展開
+  when: current_helm.rc != 0 or helm_version not in current_helm.stdout
+  block:
+    - name: helm tar.gz をダウンロード
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-{{ helm_version }}-linux-{{ helm_arch }}.tar.gz"
+        dest: "/tmp/helm-{{ helm_version }}.tar.gz"
+        mode: "0644"
+
+    - name: helm tar.gz を /tmp に展開
+      ansible.builtin.unarchive:
+        src: "/tmp/helm-{{ helm_version }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+        creates: "/tmp/linux-{{ helm_arch }}/helm"
+
+    - name: /usr/local/bin/helm を配置
+      ansible.builtin.copy:
+        src: "/tmp/linux-{{ helm_arch }}/helm"
+        dest: /usr/local/bin/helm
+        remote_src: true
+        mode: "0755"
+        owner: root
+        group: root
+
+- name: helm 動作確認
+  ansible.builtin.command: helm version --short --client
+  register: helm_verify
+  changed_when: false

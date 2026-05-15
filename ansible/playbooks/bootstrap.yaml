@@ -1,0 +1,10 @@
+- name: 全ノード共通の前準備
+  hosts: all
+  become: true
+  roles:
+    - role: k8s_prereqs
+      tags: [prereqs]
+    - role: k8s_packages
+      tags: [packages]
+    - role: containerd
+      tags: [containerd]

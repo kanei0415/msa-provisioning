@@ -1,0 +1,4 @@
+- import_playbook: playbooks/bootstrap.yaml
+- import_playbook: playbooks/control-plane.yaml
+- import_playbook: playbooks/workers.yaml
+- import_playbook: playbooks/addons.yaml

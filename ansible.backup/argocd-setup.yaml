@@ -39,6 +39,7 @@
               nodePorts:
                 http: 30080
             extraArgs:
+              - --rootpath=/argocd
               - --insecure
 
     - name: CRDの存在確認

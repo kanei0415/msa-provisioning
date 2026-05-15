@@ -1,0 +1,14 @@
+---
+- name: クラスタ アドオン（helm / AWS LBC / ArgoCD / Traefik）
+  hosts: main-master
+  become: true
+  roles:
+    - role: helm
+      tags: [helm]
+    - role: aws_lbc
+      tags: [lbc, aws_lbc]
+    - role: argocd
+      tags: [argocd]
+    - role: traefik
+      tags: [traefik]
+      when: deploy_traefik | bool
