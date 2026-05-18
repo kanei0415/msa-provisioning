@@ -39,7 +39,7 @@
     values:
       server:
         service:
-          type: ClusterIp
+          type: ClusterIP
         extraArgs:
           - "--rootpath={{ argocd_root_path }}"
           - "--insecure"

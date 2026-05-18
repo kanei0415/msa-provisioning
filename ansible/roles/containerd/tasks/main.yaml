@@ -10,20 +10,24 @@
     state: directory
     mode: "0755"
 
-- name: containerd デフォルト config の生成（初回のみ）
-  ansible.builtin.shell: |
-    set -o pipefail
-    containerd config default > /etc/containerd/config.toml
-  args:
-    executable: /bin/bash
-    creates: /etc/containerd/config.toml
-  notify: restart containerd
+- name: containerd config.toml の配置（v2/v3 両対応の SystemdCgroup + sandbox_image を明示）
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    mode: "0644"
+    content: |
+      version = 3
 
-- name: SystemdCgroup を true に切り替え
-  ansible.builtin.replace:
-    path: /etc/containerd/config.toml
-    regexp: 'SystemdCgroup = false'
-    replace: 'SystemdCgroup = true'
+      [plugins.'io.containerd.cri.v1.images']
+      sandbox_image = "registry.k8s.io/pause:3.10"
+
+      [plugins.'io.containerd.cri.v1.runtime'.containerd]
+      default_runtime_name = "runc"
+
+      [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+      runtime_type = "io.containerd.runc.v2"
+
+      [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+      SystemdCgroup = true
   notify: restart containerd
 
 - name: containerd の起動と有効化

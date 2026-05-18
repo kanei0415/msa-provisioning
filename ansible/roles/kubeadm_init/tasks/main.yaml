@@ -1,4 +1,9 @@
 ---
+- name: /etc/hosts に master_private_ip を追加
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 {{ master_private_ip }}"
+
 - name: kubeadm / kubectl のインストール
   ansible.builtin.dnf:
     name:

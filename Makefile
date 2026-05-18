@@ -152,26 +152,25 @@ cluster-clear: ## clean.yaml 実行（kubeadm reset + /etc/kubernetes,/var/lib/e
 # ============================================================
 
 .PHONY: get-kubeconfig
-get-kubeconfig: ## master から admin.conf をローカル ./.kube/config に取得
+get-kubeconfig: ## master から admin.conf をローカル ./.kube/config に取得（server を https://localhost:6443 に書き換え）
 	@mkdir -p $(dir $(LOCAL_KUBECONFIG))
 	scp -i $(SSH_KEY) -o ProxyCommand="ssh -W %h:%p -q ec2-user@$(BASTION_A_IP) -i $(SSH_KEY)" \
 	    ec2-user@$(MASTER_PRIV_IP):/home/ec2-user/.kube/config $(LOCAL_KUBECONFIG)
+	@# server を localhost に書き換え。localhost は kubeadm-config の certSANs に含まれているため TLS 検証が通る。
+	@sed -i.bak -E 's|server: https://[0-9.]+:6443|server: https://localhost:6443|' $(LOCAL_KUBECONFIG) && rm -f $(LOCAL_KUBECONFIG).bak
 	@printf "$(GREEN)kubeconfig 取得完了: $(LOCAL_KUBECONFIG)$(RESET)\n"
 	@printf "$(YELLOW)使い方:$(RESET)\n"
-	@printf "  別 terminal で:  make kube-tunnel\n"
+	@printf "  別 terminal で:  make kube-tunnel  （トンネルを張り続けるので維持）\n"
 	@printf "  この terminal で: export KUBECONFIG=$(LOCAL_KUBECONFIG) && kubectl get nodes\n"
-	@printf "  ※ kubeconfig の server は master の private IP ($(MASTER_PRIV_IP):6443) を指しているため,\n"
-	@printf "     localhost:6443 から master:6443 への SSH トンネル + /etc/hosts override が必要。\n"
 
 .PHONY: kube-tunnel
-kube-tunnel: ## bastion 経由で master:6443 を localhost:6443 にトンネル（フォアグラウンド実行）
+kube-tunnel: ## bastion 経由で master:6443 を localhost:6443 にトンネル（フォアグラウンド、Ctrl+C で終了）
 	@printf "$(CYAN)bastion=$(BASTION_A_IP) master=$(MASTER_PRIV_IP)$(RESET)\n"
-	@printf "$(YELLOW)別 terminal で:$(RESET)\n"
-	@printf "  sudo sh -c 'echo \"127.0.0.1 $(MASTER_PRIV_IP)\" >> /etc/hosts'\n"
-	@printf "  export KUBECONFIG=$(LOCAL_KUBECONFIG)\n"
-	@printf "  kubectl get nodes\n\n"
-	@printf "$(YELLOW)この window はトンネルを維持します。Ctrl+C で終了。$(RESET)\n"
-	ssh -N -L 6443:$(MASTER_PRIV_IP):6443 -i $(SSH_KEY) -J ec2-user@$(BASTION_A_IP) ec2-user@$(MASTER_PRIV_IP)
+	@printf "$(GREEN)→ localhost:6443 → master:6443 を維持中。別 terminal で:$(RESET)\n"
+	@printf "    export KUBECONFIG=$(LOCAL_KUBECONFIG) && kubectl get nodes\n"
+	@printf "$(YELLOW)Ctrl+C で終了。$(RESET)\n"
+	ssh -N -L 6443:$(MASTER_PRIV_IP):6443 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+	    -i $(SSH_KEY) -J ec2-user@$(BASTION_A_IP) ec2-user@$(MASTER_PRIV_IP)
 
 # ============================================================
 # 検証 / 状態
@@ -193,24 +192,26 @@ argocd-password: ## ArgoCD admin の初期パスワードを表示
 	  "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf -n $(ARGOCD_NS) get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
 
 .PHONY: argocd-port-forward
-argocd-port-forward: ## ArgoCD UI をローカル localhost:8443 にトンネル
+argocd-port-forward: ## ArgoCD UI を localhost:8443 にフォワード（単一コマンド、Ctrl+C で終了）
 	@printf "$(CYAN)master=$(MASTER_PRIV_IP) via $(BASTION_A_IP)$(RESET)\n"
-	@printf "$(YELLOW)別 terminal で kubectl port-forward を起動する手順:$(RESET)\n"
-	@printf "  1) この terminal は SSH トンネルを維持\n"
-	@printf "  2) 別 terminal で:\n"
-	@printf "       ssh -i $(SSH_KEY) -J ec2-user@$(BASTION_A_IP) ec2-user@$(MASTER_PRIV_IP) \\\\\n"
-	@printf "         sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf -n $(ARGOCD_NS) port-forward --address 0.0.0.0 svc/argocd-server 8443:80\n"
-	@printf "  3) ブラウザで http://localhost:8443/argocd を開く\n"
-	@printf "  4) admin / \$$(make argocd-password) でログイン\n\n"
-	@printf "$(GREEN)以下のコマンドでローカル 8443 にポート転送を張ります（Ctrl+C で終了）:$(RESET)\n"
-	ssh -N -L 8443:127.0.0.1:8443 -i $(SSH_KEY) -J ec2-user@$(BASTION_A_IP) ec2-user@$(MASTER_PRIV_IP)
+	@PW=$$($(MAKE) -s argocd-password 2>/dev/null); \
+	  printf "$(GREEN)→ http://localhost:8443/argocd  (admin / $$PW)$(RESET)\n"
+	@printf "$(YELLOW)Ctrl+C で終了。$(RESET)\n"
+	@# 前回の SSH が異常終了した場合 master 側に残留する kubectl port-forward を予防的に kill
+	@ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) -J ec2-user@$(BASTION_A_IP) ec2-user@$(MASTER_PRIV_IP) \
+	    'sudo pkill -9 -f "kubectl .*port-forward.*svc/argocd-server" 2>/dev/null; exit 0' >/dev/null 2>&1 || true
+	@# -t (TTY 割当) で SSH 切断時に SIGHUP が sudo→kubectl まで届くようにする
+	@# -L: laptop:8443 → master:127.0.0.1:8443  /  remote 側で kubectl port-forward が同 port を bind
+	ssh -tt -L 8443:127.0.0.1:8443 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+	    -i $(SSH_KEY) -J ec2-user@$(BASTION_A_IP) ec2-user@$(MASTER_PRIV_IP) \
+	    "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf -n $(ARGOCD_NS) port-forward --address 127.0.0.1 svc/argocd-server 8443:80"
 
 .PHONY: argocd-cli
 argocd-cli: ## argocd CLI 用の login コマンド例を表示
 	@PW=$$($(MAKE) -s argocd-password); \
 	printf "$(YELLOW)argocd CLI でログインする手順:$(RESET)\n"; \
-	printf "  1) make argocd-port-forward （別 terminal で起動）\n"; \
-	printf "  2) argocd login localhost:8443 --username admin --password '$$PW' --insecure\n"; \
+	printf "  1) make argocd-port-forward （別 terminal で起動して維持）\n"; \
+	printf "  2) argocd login localhost:8443 --username admin --password '$$PW' --insecure --grpc-web-root-path /argocd\n"; \
 	printf "  3) argocd app list / argocd app sync root-app\n"
 
 # ============================================================
