@@ -24,3 +24,5 @@ ansible/inventory.ini
 .env
 
 .claude
+
+.kube
