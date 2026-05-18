@@ -21,3 +21,7 @@
       serviceAccount:
         create: true
         name: aws-load-balancer-controller
+  register: aws_lbc_install
+  retries: 5
+  delay: 20
+  until: aws_lbc_install is success

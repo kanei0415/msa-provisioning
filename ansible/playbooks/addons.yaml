@@ -1,7 +1,25 @@
 ---
 - name: クラスタ アドオン（helm / AWS LBC / ArgoCD / Traefik）
-  hosts: main-master
+  hosts: master
   become: true
+  pre_tasks:
+    - name: kube-system の全 pod が Running/Succeeded になるまで待つ
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --kubeconfig={{ admin_conf_path }} get pods -n kube-system \
+          --no-headers \
+          -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[*].ready' \
+          | awk '{
+              if ($2 != "Running" && $2 != "Succeeded") { print "NOT_READY:"$0; bad=1 }
+              else if ($2 == "Running" && index($3, "false") > 0) { print "NOT_READY:"$0; bad=1 }
+            } END { exit bad ? 1 : 0 }'
+      args:
+        executable: /bin/bash
+      register: kube_system_ready
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: kube_system_ready.rc == 0
   roles:
     - role: helm
       tags: [helm]

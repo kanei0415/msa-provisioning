@@ -1,37 +1,31 @@
-[ap-northeast-2a-masters]
-${ap-northeast-2a-master-node-01}
-${ap-northeast-2a-master-node-02}
+[master]
+${master_private_ip}
 
 [ap-northeast-2a-workers]
 ${ap-northeast-2a-worker-node-01}
-
-[main-master]
-main-master ansible_host=${ap-northeast-2b-master-node-01}
+${ap-northeast-2a-worker-node-02}
 
 [ap-northeast-2b-workers]
 ${ap-northeast-2b-worker-node-01}
 ${ap-northeast-2b-worker-node-02}
+${ap-northeast-2b-worker-node-03}
 
-[ap-northeast-2a-masters:vars]
-ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
+[workers:children]
+ap-northeast-2a-workers
+ap-northeast-2b-workers
+
+[master:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
 
 [ap-northeast-2a-workers:vars]
-ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
-
-[main-master:vars]
-ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q ec2-user@${bastion_b_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
 
 [ap-northeast-2b-workers:vars]
-ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p -q ec2-user@${bastion_b_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_b_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
 
 [all:vars]
 ansible_port=22
 ansible_user=ec2-user
 ansible_ssh_private_key_file=~/.ssh/ktcloud-bastion-node-key
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
-nlb_dns_name=${ktcloud_nlb_dns_name}
-control_plane_endpoint="${ktcloud_nlb_dns_name}:6443"
 vpc_id=${vpc_id}
-a_master_01_private_ip=${ap-northeast-2a-master-node-01}
-a_master_02_private_ip=${ap-northeast-2a-master-node-02}
-b_master_01_private_ip=${ap-northeast-2b-master-node-01}
+master_private_ip=${master_private_ip}

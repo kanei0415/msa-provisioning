@@ -1,202 +1,200 @@
-### AWS Architecture
-![AWS デプロイアーキテクチャ](images/AWS-arch.png)
+# kt-cloud-cluster
 
-### Terraform
-- backend.tfvars.sampleからbackend.tfvarsを用意する
-```terminal
-cp backend.tfvars.sample backend.tfvars
-```
-- terraform initでterraform backendをS3に変換する
-```terminal
-terraform init -backend-config=backend.tfvars -migrate-state
-```
+AWS 上に **kubeadm ベースの自己管理型シングル master Kubernetes クラスタ** を `ap-northeast-2` に立ち上げるための Terraform + Ansible 構成。EKS は使わず、EC2 で 1 master + 5 worker（マルチ AZ）を立て、AWS Load Balancer Controller と ArgoCD（GitOps）を載せる。
 
-### IAM ポリシー
-- terraformを実行するには下記のような政策が必要だ
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "EC2AndVPCManagement",
-            "Effect": "Allow",
-            "Action": [
-                "ec2:*Vpc*",
-                "ec2:*Subnet*",
-                "ec2:*Gateway*",
-                "ec2:*Route*",
-                "ec2:*Address*",
-                "ec2:*Instance*",
-                "ec2:*SecurityGroup*",
-                "ec2:*NetworkInterface*",
-                "ec2:*KeyPair*",
-                "ec2:*Image*",
-                "ec2:*Volume*",
-                "ec2:*Tag*"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Sid": "ELBManagement",
-            "Effect": "Allow",
-            "Action": [
-                "elasticloadbalancing:*"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Sid": "EFSManagement",
-            "Effect": "Allow",
-            "Action": [
-                "elasticfilesystem:CreateFileSystem",
-                "elasticfilesystem:CreateMountTarget",
-                "elasticfilesystem:DeleteFileSystem",
-                "elasticfilesystem:DeleteMountTarget",
-                "elasticfilesystem:DescribeFileSystems",
-                "elasticfilesystem:DescribeMountTargets",
-                "elasticfilesystem:ModifyFileSystem",
-                "elasticfilesystem:DescribeMountTargetSecurityGroups"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
+クラスタ名: `kt-cloud-cluster`
+Kubernetes: `v1.30`
+CNI: Calico `v3.27.0`
+GitOps: ArgoCD（`https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git` を root app に同期）
+
+設計判断とトラブルシューティングは [`PROVISIONING_REPORT.md`](./PROVISIONING_REPORT.md) を参照。
+
+---
+
+## トポロジ
+
 ```
-- IAM Role関連権限
-```json
-{
-	"Version": "2012-10-17",
-	"Statement": [
-		{
-			"Sid": "AllowReadSpecificRole",
-			"Effect": "Allow",
-			"Action": [
-				"iam:GetRole",
-				"iam:ListRoles",
-				"iam:PassRole"
-			],
-			"Resource": "*"
-		},
-		{
-			"Sid": "AllowInstanceProfileManagement",
-			"Effect": "Allow",
-			"Action": [
-				"iam:GetInstanceProfile",
-				"iam:CreateInstanceProfile",
-				"iam:AddRoleToInstanceProfile",
-				"iam:RemoveRoleFromInstanceProfile",
-				"iam:DeleteInstanceProfile"
-			],
-			"Resource": "*"
-		}
-	]
-}
+VPC 10.0.0.0/16  (ap-northeast-2)
+├── ap-northeast-2a
+│   ├── public  10.0.1.0/24   → bastion-a (NAT GW-a)
+│   └── private 10.0.2.0/24   → master, worker-01, worker-02
+└── ap-northeast-2b
+    ├── public  10.0.3.0/24   → bastion-b (NAT GW-b)
+    └── private 10.0.4.0/24   → worker-01, worker-02, worker-03
 ```
 
-### aws cli
-- terraformではaws-cli aws confitureを利用して認証情報を読み込む
-```terminal
-➜  ktcloud-sptingboot-msa-market-service git:(master) brew install aws-cli
-```
-- CLI専用のIAM Secret Keyとap-northeast-2リジョンを入力する
-```terminal
-➜  ktcloud-sptingboot-msa-market-service git:(master) aws configure
+- **master** は 2a の private subnet に 1 台のみ。HA 用 NLB はなし（controlPlaneEndpoint は master の private IP を直接指定）。
+- **worker** は 2a に 2 台、2b に 3 台。
+- bastion は AZ ごとに 1 台。Ansible の ProxyCommand が各 AZ の private subnet にいるノードに per-AZ で SSH する。
+- EFS は両 AZ にマウントターゲットを持つので worker からの NFS マウントは AZ を問わない。
+
+---
+
+## クイックスタート
+
+すべての操作は **Makefile** にラップされています。
+
+```bash
+make help            # 利用可能なターゲットを表示
 ```
 
-### キーペア
-- キーペアのためのシェルを起動する
-```terminal
-➜  provisioning git:(master) bash ssh-key-gen.bash
+### 0 からフル構築
+
+```bash
+# 1. 前提コマンドの確認
+make check-prereqs
+
+# 2. SSH キーペアを生成（既存なら skip）
+make ssh-key
+
+# 3. terraform/backend.tfvars を作成（S3 bucket を埋める）
+cp terraform/backend.tfvars.sample terraform/backend.tfvars
+$EDITOR terraform/backend.tfvars
+
+# 4. Terraform init
+make tf-init
+
+# 5. AWS インフラ作成（VPC / EC2 / EFS / IAM 結線）
+make tf-apply
+
+# 6. bastion の host key を受理（ProxyCommand 用）
+make bastion-accept
+
+# 7. Ansible 疎通確認
+make ansible-ping
+
+# 8. クラスタ立ち上げ
+make cluster-up
+
+# 9. 検証
+make verify
 ```
 
-### NLBをクラスタに登録するためのIAMロール
-- EKSを使用しないため、EC2で構築されるNLBを登録するためにはIAM政策が要る
-https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/install/iam_policy.json
-- 「ktcloud-cluster-node-role」のIAM Roleに先のIAM制作をつけて用意しよう
+`make all` で 1〜9 を一括実行できます（`backend.tfvars` だけ事前に必要）。
 
-### Terrafrom
-```terminal
-➜  terraform git:(master) terraform plan
-```
-```terminal
-➜  terraform git:(master) terraform apply
-```
-- AnsibleのPlaybookを起動するためのリモートホストのFingerprintをローカルマシンに登録する必要がある両方のbastionにssh接続して「yes」を入力する
-```terraform
-output "ap-northeast-2a-bastion-node-connect-command" {
-  value = "ssh ec2-user@${aws_instance.ap-northeast-2a-bastion-node.public_ip} -i ~/.ssh/ktcloud-bastion-node-key"
-}
+---
 
-output "ap-northeast-2b-bastion-node-connect-command" {
-  value = "ssh ec2-user@${aws_instance.ap-northeast-2b-bastion-node.public_ip} -i ~/.ssh/ktcloud-bastion-node-key"
-}
+## ローカルから kubectl を使う
+
+```bash
+# admin.conf をローカルに取得（./.kube/config）
+make get-kubeconfig
+
+# bastion → master への SSH トンネルを張る
+make kube-tunnel     # フォアグラウンドで動き続けるので別 terminal を用意
+
+# 別 terminal で
+sudo sh -c 'echo "127.0.0.1 <master-private-ip>" >> /etc/hosts'
+export KUBECONFIG=$PWD/.kube/config
+kubectl get nodes
 ```
 
-### Ansible
-- inventory.iniがterraformの.tftplから作成され
-- pingが到達していることを確認しよう
-```terminal
-➜  ansible git:(master) ansible all -m ping -i inventory.ini
-```
-- K8SのクラスタをセットアップするPlaybookを起動する
-```terminal
-➜  ansible git:(master) ansible-playbook -i inventory.ini main.yaml
+`make kube-tunnel` は `inventory.ini` から master の private IP を読んでトンネルを張ります。kubeconfig は `https://<master-private-ip>:6443` を指しているので、 `/etc/hosts` で master private IP を `127.0.0.1` に向けることで証明書 SAN が通ります（certSANs に master の private IP を含めている）。
+
+---
+
+## ArgoCD ダッシュボードへのアクセス
+
+ArgoCD は **ClusterIP** で `argocd` namespace に入っており、 `--rootpath=/argocd --insecure` で起動しています。外部公開はあえてしておらず、操作端末からは port-forward 経由でアクセスします。
+
+```bash
+# admin パスワードを表示
+make argocd-password
+
+# master 上で kubectl port-forward → bastion 経由でローカル 8443 に転送
+make argocd-port-forward
+# このコマンドは SSH トンネルを張ったままになります。
+# 別 terminal で表示される手順 (kubectl port-forward) を実行してください。
 ```
 
-### K8S Cluster
-- 全ノードはキーペアを共有しているため、SSHジャンプのためのsshエージェントを登録する
-```terminal
-➜  ktcloud-sptingboot-msa-market-service git:(master) ✗ ssh-add ~/.ssh/ktcloud-bastion-node-key
-Identity added: /Users/kanei/.ssh/ktcloud-bastion-node-key (kanei@gim-yeonghoui-MacBookPro.local)
-```
-- 以下のoutputの結果を一目に確認できる
-```terraform
-output "main-master-node-connect-command" {
-  value = "ssh -A -J ec2-user@${aws_instance.ap-northeast-2b-bastion-node.public_ip} ec2-user@${aws_instance.ap-northeast-2b-master-node-01.private_ip}"
-}
-```
-- 実際に接続して確認してみると
-```terminal
-[ec2-user@ip-10-0-4-212 ~]$ kubectl get nodes
-NAME                                            STATUS   ROLES           AGE   VERSION
-ip-10-0-2-149.ap-northeast-2.compute.internal   Ready    <none>          39m   v1.30.14
-ip-10-0-2-63.ap-northeast-2.compute.internal    Ready    control-plane   40m   v1.30.14
-ip-10-0-2-81.ap-northeast-2.compute.internal    Ready    control-plane   40m   v1.30.14
-ip-10-0-4-196.ap-northeast-2.compute.internal   Ready    <none>          39m   v1.30.14
-ip-10-0-4-212.ap-northeast-2.compute.internal   Ready    control-plane   40m   v1.30.14
-ip-10-0-4-6.ap-northeast-2.compute.internal     Ready    <none>          39m   v1.30.14
-```
-- albを使用するためのALBコントローラーも起動中であることを確認できる
-```terminal
-[ec2-user@ip-10-0-4-126 ~]$ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-NAME                                            READY   STATUS    RESTARTS   AGE
-aws-load-balancer-controller-5cdc56445f-9xn6t   1/1     Running   0          2m15s
-aws-load-balancer-controller-5cdc56445f-gmrcr   1/1     Running   0          2m15s
-```
-- argocd cliを設置
-```terminal
-sudo curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+ブラウザで `http://localhost:8443/argocd` を開き、 `admin / <make argocd-password の出力>` でログインします。
 
-sudo chmod +x /usr/local/bin/argocd
+argocd CLI を使う場合:
 
-argocd version --client
-```
-- argocd login
-```terminal
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-
-argocd login <b-master-01-ip>:30080 --username admin --insecure
-```
-- argocd command, TraefikはDegradedからHealthyまで５分以上かかる
-```terminal
-argocd app list
-
-argocd app get argocd/root-app
-
-argocd app sync root-app --prune
+```bash
+make argocd-cli              # 手順を表示
 ```
 
-### Finalizer
-```terminal
-kubectl get ns argocd -o json | jq '.spec.finalizers = []' | kubectl replace --raw "/api/v1/namespaces/argocd/finalize" -f -
+---
+
+## 部分的に playbook を流す
+
+`site.yaml` は以下 4 つの playbook の集合です。個別に流すことができます。
+
+| Makefile target | 対応 playbook | 内容 |
+|---|---|---|
+| `make cluster-bootstrap` | `playbooks/bootstrap.yaml` | swapoff / kernel modules / kubelet / kubeadm / kubectl / containerd |
+| `make cluster-control-plane` | `playbooks/control-plane.yaml` | `kubeadm init` → Calico CNI |
+| `make cluster-workers` | `playbooks/workers.yaml` | worker の `kubeadm join` |
+| `make cluster-addons` | `playbooks/addons.yaml` | Helm / AWS LBC / ArgoCD（root-app 作成） |
+| `make cluster-clear` | `playbooks/clean.yaml` | `kubeadm reset` + `/etc/kubernetes`, `/var/lib/etcd`, CNI iface 削除 |
+
+`make cluster-up` は `site.yaml` を直接流します。
+
+---
+
+## 破棄
+
+```bash
+make destroy-all     # cluster-clear → terraform destroy
 ```
+
+`tf-destroy` 単体でも EC2/VPC は破棄できますが、 ArgoCD が AWS リソース（LoadBalancer など）を作っていた場合は先に `cluster-clear` で kubeadm reset を流してから terraform destroy する方が綺麗です。
+
+---
+
+## ディレクトリ構造
+
+```
+.
+├── Makefile                 # すべての操作のエントリポイント
+├── README.md                # 本ファイル
+├── PROVISIONING_REPORT.md   # 構築レポート（日本語、詳細解説）
+├── CLAUDE.md                # AI agent 向けプロジェクト指示書
+├── ssh-key-gen.bash         # SSH キーペア生成スクリプト
+├── terraform/               # AWS インフラ定義
+│   ├── ec2.tf / sgs.tf / vpc.tf / subnets.tf / nat.tf
+│   ├── storage.tf           # EFS
+│   ├── main.tf              # ansible-inventory モジュール呼び出し
+│   ├── modules/ansible-inventory/   # inventory.ini を生成
+│   └── backend.tfvars.sample
+└── ansible/
+    ├── site.yaml            # 全 playbook を import
+    ├── inventory.ini        # terraform apply で生成（コミット不要）
+    ├── group_vars/all.yaml
+    └── playbooks/
+        ├── bootstrap.yaml
+        ├── control-plane.yaml
+        ├── workers.yaml
+        ├── addons.yaml
+        └── clean.yaml
+    └── roles/
+        ├── k8s_prereqs/
+        ├── k8s_packages/
+        ├── containerd/
+        ├── kubeadm_init/
+        ├── kubeadm_join_worker/
+        ├── cni_calico/
+        ├── k8s_python/
+        ├── helm/
+        ├── aws_lbc/
+        ├── argocd/
+        ├── traefik/
+        └── k8s_clear/
+```
+
+---
+
+## 既知の制約
+
+- aws-load-balancer-controller の webhook が ArgoCD インストールを阻害する場合があります。 `argocd` role は事前に webhook を削除する task を持っているのでそのまま運用してください。
+- terraform 内の `iam.tf` は **既存の IAM Role `ktcloud-cluster-node-role`** を data source で参照します。事前に Role を作成し、 [AWS LBC IAM policy](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/install/iam_policy.json) と PassRole の権限を付与しておく必要があります。
+- bastion SG は `ifconfig.me` で解決される現在のグローバル IP のみを許可します。IP が変わったら `terraform apply` を再実行してください。
+- シングル master 構成です。control plane は SPOF。master ノードが落ちると apiserver が止まります。学習・開発用途に最適化されています。
+
+---
+
+## 詳細・トラブルシューティング
+
+- 構築の全体像、設計判断は [`PROVISIONING_REPORT.md`](./PROVISIONING_REPORT.md) を参照。
+- AI agent（Claude Code）向けの操作指針は [`CLAUDE.md`](./CLAUDE.md) を参照。

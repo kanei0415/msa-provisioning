@@ -7,6 +7,5 @@ module "ansible-inventory" {
       public_ip  = instance.public_ip
     }
   }
-  nlb_dns_name = aws_lb.kt_cloud_nlb.dns_name
-  vpc_id       = aws_vpc.kt_cloud_vpc.id
+  vpc_id = aws_vpc.kt_cloud_vpc.id
 }

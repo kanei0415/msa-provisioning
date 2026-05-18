@@ -1,6 +1,6 @@
 ---
-- name: Join 用 token を main-master で生成し worker に配布
-  delegate_to: "{{ groups['main-master'][0] }}"
+- name: Join 用 token を master で生成し worker に配布
+  delegate_to: "{{ groups['master'][0] }}"
   run_once: true
   become: true
   block:
@@ -16,7 +16,7 @@
         worker_join_cmd: "{{ worker_join_cmd_raw.stdout | trim }}"
       delegate_to: "{{ item }}"
       delegate_facts: true
-      loop: "{{ groups['ap-northeast-2a-workers'] | union(groups['ap-northeast-2b-workers']) }}"
+      loop: "{{ groups['workers'] }}"
 
 - name: kubeadm join の実行（worker）
   ansible.builtin.shell: >

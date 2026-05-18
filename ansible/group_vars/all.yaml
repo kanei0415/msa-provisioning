@@ -23,8 +23,3 @@ aws_lbc_namespace: "kube-system"
 
 deploy_traefik: false
 traefik_namespace: "traefik"
-
-master_hosts_entries:
-  - { ip_var: "a_master_01_private_ip", name: "ap-northeast-2a-master-01" }
-  - { ip_var: "a_master_02_private_ip", name: "ap-northeast-2a-master-02" }
-  - { ip_var: "b_master_01_private_ip", name: "ap-northeast-2b-master-01" }

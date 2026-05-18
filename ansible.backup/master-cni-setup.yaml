@@ -1,9 +1,0 @@
-- name: KubernetesクラスタのCNIプラグインセットアップ
-  hosts: main-master
-  become: true
-  tasks:
-    - name: Calicoネットワークプラグインの適用
-      ansible.builtin.shell: |
-        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
-      environment:
-        KUBECONFIG: /home/ec2-user/.kube/config

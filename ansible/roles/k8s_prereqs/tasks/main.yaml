@@ -44,15 +44,12 @@
     - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
     - { name: "net.ipv4.ip_forward", value: "1" }
 
-- name: /etc/hosts にマスターノードのエントリを追加
+- name: /etc/hosts に master のエントリを追加
   ansible.builtin.lineinfile:
     path: /etc/hosts
-    line: "{{ lookup('vars', item.ip_var) }} {{ item.name }}"
-    regexp: "\\s{{ item.name }}$"
+    line: "{{ master_private_ip }} master"
+    regexp: '\smaster$'
     state: present
-  loop: "{{ master_hosts_entries }}"
-  loop_control:
-    label: "{{ item.name }}"
 
 - name: /etc/hosts に自分自身のホスト名エントリを追加
   ansible.builtin.lineinfile:

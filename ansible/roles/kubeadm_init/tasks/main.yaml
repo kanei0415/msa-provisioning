@@ -1,4 +1,12 @@
 ---
+- name: kubeadm / kubectl のインストール
+  ansible.builtin.dnf:
+    name:
+      - kubeadm
+      - kubectl
+    state: present
+    disable_excludes: kubernetes
+
 - name: containerd の起動と有効化（init 前の保証）
   ansible.builtin.systemd:
     name: containerd
@@ -21,7 +29,6 @@
   ansible.builtin.command: >
     kubeadm init
     --config /etc/kubernetes/kubeadm-config.yaml
-    --upload-certs
   args:
     creates: "{{ admin_conf_path }}"
   register: kubeadm_init_result
@@ -42,20 +49,3 @@
     owner: "{{ ec2_user }}"
     group: "{{ ec2_user }}"
     mode: "0600"
-
-- name: kube-proxy DaemonSet の存在確認
-  ansible.builtin.command:
-    cmd: kubectl get ds kube-proxy -n kube-system -o name
-  environment:
-    KUBECONFIG: "{{ admin_conf_path }}"
-  register: kube_proxy_check
-  changed_when: false
-  failed_when: false
-
-- name: kubeadm addon フェーズ（kube-proxy + coredns）の適用
-  ansible.builtin.command: >
-    kubeadm init phase addon all
-    --config /etc/kubernetes/kubeadm-config.yaml
-  when: kube_proxy_check.rc != 0
-  register: kubeadm_addon_result
-  changed_when: kubeadm_addon_result.rc == 0

@@ -29,12 +29,6 @@ locals {
       instance_type = var.master_instance_type,
       subnet        = "private"
     }
-    "ap-northeast-2a-master-02" = {
-      az            = "ap-northeast-2a",
-      role          = "master",
-      instance_type = var.master_instance_type,
-      subnet        = "private"
-    }
     "ap-northeast-2a-worker-01" = {
       az            = "ap-northeast-2a",
       role          = "worker",
@@ -42,11 +36,12 @@ locals {
       subnet        = "private",
       ebs_size      = 20
     }
-    "ap-northeast-2b-master-01" = {
-      az            = "ap-northeast-2b",
-      role          = "master",
-      instance_type = var.master_instance_type,
-      subnet        = "private"
+    "ap-northeast-2a-worker-02" = {
+      az            = "ap-northeast-2a",
+      role          = "worker",
+      instance_type = var.worker_instance_type,
+      subnet        = "private",
+      ebs_size      = 20
     }
     "ap-northeast-2b-worker-01" = {
       az            = "ap-northeast-2b",
@@ -56,6 +51,13 @@ locals {
       ebs_size      = 20
     }
     "ap-northeast-2b-worker-02" = {
+      az            = "ap-northeast-2b",
+      role          = "worker",
+      instance_type = var.worker_instance_type,
+      subnet        = "private",
+      ebs_size      = 20
+    }
+    "ap-northeast-2b-worker-03" = {
       az            = "ap-northeast-2b",
       role          = "worker",
       instance_type = var.worker_instance_type,

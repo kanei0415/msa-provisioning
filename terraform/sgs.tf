@@ -10,25 +10,6 @@ resource "aws_security_group" "kt_cloud_cluster_efs_sg" {
   }
 }
 
-resource "aws_security_group" "kt_cloud_vpc_nlb_sg" {
-  name   = "kt_cloud_vpc_nlb_sg"
-  vpc_id = aws_vpc.kt_cloud_vpc.id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
 resource "aws_security_group" "kt_cloud_vpc_cluster_node_sg" {
   name   = "kt_cloud_vpc_cluster_node_sg"
   vpc_id = aws_vpc.kt_cloud_vpc.id

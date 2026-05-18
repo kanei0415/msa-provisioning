@@ -9,10 +9,6 @@ variable "nodes" {
   }))
 }
 
-variable "nlb_dns_name" {
-  type = string
-}
-
 variable "vpc_id" {
   type = string
 }
