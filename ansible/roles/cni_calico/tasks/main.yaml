@@ -5,8 +5,6 @@
     dest: "/tmp/calico-{{ calico_version }}.yaml"
     mode: "0644"
   register: calico_manifest_dl
-  retries: 5
-  delay: 5
   until: calico_manifest_dl is succeeded
 
 - name: Calico の適用
