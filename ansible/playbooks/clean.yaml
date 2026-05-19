@@ -1,7 +1,88 @@
 ---
-- name: クラスタの teardown
-  hosts: all
+# ============================================================
+# clean.yaml — destroy-all の手前で動かす
+# ============================================================
+# 1) drain_lbs   : Service type=LoadBalancer を全部削除（Traefik NLB / LBC が作る ALB を含む）
+# 2) drain_pvcs  : 全 namespace の PVC を削除（EBS CSI が動的に作った EBS volume を解放）
+# 3) k8s_clear   : master の kubeadm reset と /etc/kubernetes 等を消す
+#
+# ASG worker は Ansible で触れないので、ASG 自体の scale-to-0 は
+# Makefile 側 (destroy-all) が `aws autoscaling update-auto-scaling-group` で行う。
+#
+# 失敗しても次に進めるよう `failed_when: false` で耐性を持たせる（terraform destroy が
+# 最終クリーンアップを担うため、kubectl 側のクリーンアップは best-effort）。
+
+- name: cluster 上のクラウドリソース (LB + EBS-CSI volume) を解放
+  hosts: master
   become: true
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/irsa.yaml"
+  tags: [drain]
+  tasks:
+    - name: Service type=LoadBalancer を全 namespace から削除
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --kubeconfig={{ admin_conf_path }} get svc -A \
+          -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+          | while read ns name; do
+              echo "deleting svc $ns/$name"
+              kubectl --kubeconfig={{ admin_conf_path }} -n "$ns" delete svc "$name" --wait=false || true
+            done
+      args:
+        executable: /bin/bash
+      failed_when: false
+      changed_when: true
+
+    - name: Ingress (LBC が ALB を作る) を全 namespace から削除
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --kubeconfig={{ admin_conf_path }} get ingress -A \
+          -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+          | while read ns name; do
+              echo "deleting ingress $ns/$name"
+              kubectl --kubeconfig={{ admin_conf_path }} -n "$ns" delete ingress "$name" --wait=false || true
+            done
+      args:
+        executable: /bin/bash
+      failed_when: false
+      changed_when: true
+
+    - name: LBC が ALB/NLB を完全に解放するまで少し待つ
+      ansible.builtin.pause:
+        seconds: 60
+
+    - name: 全 namespace の PVC を削除（EBS CSI が EBS を解放する）
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --kubeconfig={{ admin_conf_path }} get pvc -A \
+          -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+          | while read ns name; do
+              echo "deleting pvc $ns/$name"
+              kubectl --kubeconfig={{ admin_conf_path }} -n "$ns" delete pvc "$name" --wait=false || true
+            done
+      args:
+        executable: /bin/bash
+      failed_when: false
+      changed_when: true
+
+    - name: PV (Released / Bound 残骸) を強制削除
+      ansible.builtin.shell: |
+        set -o pipefail
+        kubectl --kubeconfig={{ admin_conf_path }} get pv -o name | while read pv; do
+          kubectl --kubeconfig={{ admin_conf_path }} delete "$pv" --wait=false || true
+        done
+      args:
+        executable: /bin/bash
+      failed_when: false
+      changed_when: true
+
+    - name: EBS CSI が detach 終わるのを少し待つ
+      ansible.builtin.pause:
+        seconds: 30
+
+- name: master の kubeadm reset
+  hosts: master
+  become: true
+  tags: [reset]
   roles:
     - role: k8s_clear
-      tags: [clean]

@@ -1,26 +1,22 @@
 ---
 # ============================================================
-# AWS Cloud Controller Manager (out-of-tree CCM)
+# AWS Cloud Controller Manager (out-of-tree CCM) — IRSA 化
 # ============================================================
-# 役割:
+# 役割（変更なし）:
 #   - kubelet (--cloud-provider=external) が node 登録時に付与する
 #     `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint を除去
-#   - node に topology.kubernetes.io/zone, region などの AWS 由来の label を付与
+#   - node に topology.kubernetes.io/zone / region などの label を付与
 #   - node 削除時に EC2 instance の存在を確認して cleanup
 #
 # 本クラスタでの限定設定:
-#   - configure-cloud-routes=false : Calico (IPIP) が pod NW を完結させる
-#   - Service type=LoadBalancer は AWS LBC が担当するため CCM の service
-#     コントローラは事実上未使用（無効化はできないが衝突しない）
+#   - configure-cloud-routes=false : Calico (IPIP) が pod NW を完結
+#   - Service type=LoadBalancer は AWS LBC が担当
 #
-# 認証:
-#   - master ノードの instance profile (= ktcloud-cluster-node-role) に
-#     terraform/iam.tf で CCM 用 inline policy を attach 済み
-#   - CCM Pod は host network で動き、IMDS 経由で credential を得る
-#
-# providerID は kubeadm の InitConfiguration / JoinConfiguration の
-# kubeletExtraArgs で先にセット済 (aws:///<az>/<instance-id>)。
-# CCM はこれを参照して EC2 instance を引く。
+# 認証（変更点）:
+#   - 旧: master の instance profile に inline policy
+#   - 新: kube-system:aws-cloud-controller-manager ServiceAccount を IRSA で
+#         IAM Role (aws_iam_role.ccm) に紐付け。pod-identity-webhook が
+#         AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE を inject する。
 
 - name: cloud-provider-aws Helm リポジトリの登録
   kubernetes.core.helm_repository:
@@ -43,9 +39,11 @@
         - --cloud-provider=aws
         - --cluster-name={{ cluster_name }}
         - --configure-cloud-routes=false
-        - --use-service-account-credentials=true
-      # control-plane でのみ動かす。kubeadm の control-plane taint と
-      # kubelet の uninitialized taint を tolerate する。
+      serviceAccountName: aws-cloud-controller-manager
+      # IRSA: SA に annotation を付ける（chart 側 serviceAccount.annotations は
+      # 受けない構造なので追加でこの role の後段で patch する。
+      # 多くの chart は customAnnotations をサポートするが、cloud-provider-aws の
+      # 公式 chart はそうでない可能性があるので role の最後で必ず patch する）
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -61,7 +59,43 @@
   delay: 20
   until: aws_ccm_install is success
 
-- name: CCM が master の uninitialized taint を除去するまで待機
+# ------------------------------------------------------------
+# IRSA annotation を SA に確実に付ける
+# ------------------------------------------------------------
+# Helm chart の SA を上書き annotate（冪等）。
+- name: ccm ServiceAccount に IRSA annotation を付与
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    apply: true
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: aws-cloud-controller-manager
+        namespace: "{{ aws_ccm_namespace }}"
+        annotations:
+          eks.amazonaws.com/role-arn: "{{ irsa_ccm_role_arn }}"
+
+# annotation 反映後に CCM Pod を rollout し直す（既存 Pod は webhook を通って
+# いないので AWS_ROLE_ARN env が無い可能性が高い）
+- name: CCM DaemonSet を rollout restart（IRSA env を確実に inject）
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ admin_conf_path }}
+    -n {{ aws_ccm_namespace }}
+    rollout restart daemonset aws-cloud-controller-manager
+  register: ccm_restart
+  changed_when: "'restarted' in (ccm_restart.stdout | default(''))"
+  failed_when: false
+
+- name: CCM DaemonSet rollout 完了を待つ
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ admin_conf_path }}
+    -n {{ aws_ccm_namespace }}
+    rollout status daemonset aws-cloud-controller-manager --timeout=120s
+  changed_when: false
+
+- name: CCM が node の uninitialized taint を除去するまで待機
   ansible.builtin.shell: |
     set -o pipefail
     kubectl --kubeconfig={{ admin_conf_path }} get node \

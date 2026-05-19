@@ -1,10 +1,20 @@
-- name: 全ノード共通の前準備
-  hosts: all
+---
+# bootstrap.yaml — Packer AMI 化以降は master 上のみで追加依存だけを整える。
+#
+# ASG worker への bootstrap は UserData (terraform/templates/worker-userdata.sh.tftpl)
+# が担当するので Ansible 側からは触らない。
+#
+# Packer AMI に焼き込み済:
+#   - k8s_prereqs (swapoff / modules / sysctl)
+#   - k8s_packages (kubelet/kubeadm/kubectl)
+#   - containerd  (containerd + config.toml)
+#   - AWS CLI v2
+#
+# 本 playbook はそれ以外で master が必要とするもの (kubernetes.core 用 python deps) を入れる。
+
+- name: master の追加依存（kubernetes.core 用 python deps）
+  hosts: master
   become: true
   roles:
-    - role: k8s_prereqs
-      tags: [prereqs]
-    - role: k8s_packages
-      tags: [packages]
-    - role: containerd
-      tags: [containerd]
+    - role: k8s_python
+      tags: [python]

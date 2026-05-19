@@ -1,0 +1,25 @@
+---
+# ============================================================
+# ASG worker が cluster に join するのを待つ
+# ============================================================
+# 旧構成では Ansible が SSH で worker に入り kubeadm join を打っていた。
+# ASG 化後は worker の UserData が SSM 経由で自走 join する。Ansible 側は
+# 「想定数の Ready ノードが揃うまで待つ」だけ。
+#
+# 期待 Ready 数: worker_expected_count + 1 (master)
+
+- name: 期待ノード数の Ready が揃うまで待つ
+  ansible.builtin.shell: |
+    set -o pipefail
+    READY=$(kubectl --kubeconfig={{ admin_conf_path }} get nodes \
+      -o jsonpath='{range .items[?(@.status.conditions[-1].type=="Ready")]}{.status.conditions[-1].status}{"\n"}{end}' \
+      | grep -c '^True$' || true)
+    echo "Ready=$READY expected={{ worker_expected_count + 1 }}"
+    [ "$READY" -ge "{{ worker_expected_count + 1 }}" ]
+  args:
+    executable: /bin/bash
+  register: ready_check
+  changed_when: false
+  retries: 60
+  delay: 15
+  until: ready_check.rc == 0

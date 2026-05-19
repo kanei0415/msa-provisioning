@@ -1,0 +1,327 @@
+---
+# ============================================================
+# amazon-eks-pod-identity-webhook
+# ============================================================
+# 自己管理 kubeadm クラスタで IRSA を機能させるための要。
+# ServiceAccount に annotation `eks.amazonaws.com/role-arn` が付いた Pod に対し:
+#   - projected ServiceAccountToken volume を自動マウント
+#   - 環境変数 AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE を inject
+# を行う MutatingAdmissionWebhook。
+#
+# 参考: https://github.com/aws/amazon-eks-pod-identity-webhook
+# 公式 chart は無いので OSS のマニフェストを kustomize/raw で適用する。
+# ここでは公式 deploy/ ディレクトリ相当を kubectl apply で投入する shim を取る。
+
+- name: pod-identity-webhook ロール用の OS 依存 (git, openssl)
+  ansible.builtin.dnf:
+    name:
+      - git
+      - openssl
+    state: present
+  become: true
+
+- name: pod-identity-webhook 用 namespace 確認
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ pod_identity_webhook_namespace }}"
+
+# ------------------------------------------------------------
+# webhook 用 TLS 証明書（自己署名 + apiserver から信頼させる）
+# ------------------------------------------------------------
+# 公式 deploy/auth.yaml + deploy/mutatingwebhook.yaml + deploy/deployment.yaml
+# を git clone してそのまま投入するのが最も素直。bundled cert-manager 等の
+# 依存は持ち込まない。
+
+- name: amazon-eks-pod-identity-webhook の git clone（最新固定タグ）
+  ansible.builtin.git:
+    repo: https://github.com/aws/amazon-eks-pod-identity-webhook.git
+    dest: /opt/amazon-eks-pod-identity-webhook
+    version: "{{ pod_identity_webhook_version }}"
+    force: true
+  become: true
+
+# ------------------------------------------------------------
+# 自己署名 TLS 一式を生成し ConfigMap/Secret として注入
+# ------------------------------------------------------------
+# 公式 README の "Self-Signed Certificate" 手順を Ansible 化。
+- name: 既に Secret + Webhook config が一致しているかチェック
+  ansible.builtin.shell: |
+    set +e
+    kubectl --kubeconfig={{ admin_conf_path }} -n {{ pod_identity_webhook_namespace }} get secret pod-identity-webhook >/dev/null 2>&1
+    SECRET=$?
+    kubectl --kubeconfig={{ admin_conf_path }} get mutatingwebhookconfiguration pod-identity-webhook >/dev/null 2>&1
+    WH=$?
+    [ -f /tmp/pod-identity-webhook-tls/caBundle.b64 ] && CACHE=0 || CACHE=1
+    [ $SECRET -eq 0 ] && [ $WH -eq 0 ] && [ $CACHE -eq 0 ] && echo "reuse" || echo "regen"
+  args:
+    executable: /bin/bash
+  register: cert_reuse_check
+  changed_when: false
+
+- name: openssl で webhook 用 TLS 一式を生成（前回 cache が無い時のみ）
+  when: cert_reuse_check.stdout | trim == "regen"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    work=/tmp/pod-identity-webhook-tls
+    rm -rf $work && mkdir -p $work
+    cd $work
+
+    # CA
+    openssl req -x509 -new -newkey rsa:2048 -nodes \
+      -keyout ca.key -out ca.crt \
+      -days 3650 -subj "/CN=pod-identity-webhook-ca" > /dev/null 2>&1
+
+    # server key + CSR
+    SVC=pod-identity-webhook
+    NS={{ pod_identity_webhook_namespace }}
+    cat > server.cnf <<EOF
+    [req]
+    req_extensions = v3_req
+    distinguished_name = req_distinguished_name
+    prompt = no
+    [req_distinguished_name]
+    CN = $SVC.$NS.svc
+    [v3_req]
+    keyUsage = critical, digitalSignature, keyEncipherment
+    extendedKeyUsage = serverAuth
+    subjectAltName = @alt_names
+    [alt_names]
+    DNS.1 = $SVC
+    DNS.2 = $SVC.$NS
+    DNS.3 = $SVC.$NS.svc
+    DNS.4 = $SVC.$NS.svc.cluster.local
+    EOF
+
+    openssl req -new -newkey rsa:2048 -nodes \
+      -keyout server.key -out server.csr -config server.cnf > /dev/null 2>&1
+
+    openssl x509 -req -in server.csr \
+      -CA ca.crt -CAkey ca.key -CAcreateserial \
+      -out server.crt -days 3650 -extensions v3_req -extfile server.cnf > /dev/null 2>&1
+
+    base64 -w0 ca.crt    > caBundle.b64
+    base64 -w0 server.crt > tls.crt.b64
+    base64 -w0 server.key > tls.key.b64
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: 生成した TLS / CA を master 側から読み戻す（RAW PEM, slurp で base64 化される）
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  register: pod_identity_webhook_tls_files
+  loop:
+    - /tmp/pod-identity-webhook-tls/server.crt
+    - /tmp/pod-identity-webhook-tls/server.key
+    - /tmp/pod-identity-webhook-tls/ca.crt
+
+- name: slurp 結果を fact に展開
+  # slurp の content は base64 化されている。Secret.data は base64 を要求する
+  # ので、slurp 結果をそのまま入れれば一度のエンコードで済む。
+  # caBundle (MutatingWebhookConfiguration) も base64 化された CA を要求する
+  # のでこれもそのまま入れる。
+  ansible.builtin.set_fact:
+    pod_identity_webhook_tls_crt: "{{ pod_identity_webhook_tls_files.results[0].content }}"
+    pod_identity_webhook_tls_key: "{{ pod_identity_webhook_tls_files.results[1].content }}"
+    pod_identity_webhook_ca_bundle_b64: "{{ pod_identity_webhook_tls_files.results[2].content }}"
+
+- name: TLS Secret を kube-system に投入
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: pod-identity-webhook
+        namespace: "{{ pod_identity_webhook_namespace }}"
+      data:
+        tls.crt: "{{ pod_identity_webhook_tls_crt }}"
+        tls.key: "{{ pod_identity_webhook_tls_key }}"
+
+# ------------------------------------------------------------
+# RBAC + Deployment + Service
+# ------------------------------------------------------------
+- name: ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: pod-identity-webhook
+        namespace: "{{ pod_identity_webhook_namespace }}"
+
+- name: ClusterRole / ClusterRoleBinding
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition: "{{ item }}"
+  loop:
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: pod-identity-webhook
+      rules:
+        - apiGroups: [""]
+          resources: ["serviceaccounts"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["events"]
+          verbs: ["create", "patch"]
+        # --in-cluster=true は CertificateSigningRequest 経由で自分の cert を取得する。
+        # signer は kubernetes.io/legacy-unknown を使うので RBAC で要承認に。
+        - apiGroups: ["certificates.k8s.io"]
+          resources: ["certificatesigningrequests"]
+          verbs: ["create", "get", "list", "watch", "delete"]
+        - apiGroups: ["certificates.k8s.io"]
+          resources: ["certificatesigningrequests/approval"]
+          verbs: ["update", "patch"]
+        - apiGroups: ["certificates.k8s.io"]
+          resources: ["signers"]
+          resourceNames: ["kubernetes.io/legacy-unknown"]
+          verbs: ["approve"]
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+    - apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: pod-identity-webhook
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: pod-identity-webhook
+      subjects:
+        - kind: ServiceAccount
+          name: pod-identity-webhook
+          namespace: "{{ pod_identity_webhook_namespace }}"
+
+- name: Deployment
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: pod-identity-webhook
+        namespace: "{{ pod_identity_webhook_namespace }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: pod-identity-webhook
+        template:
+          metadata:
+            labels:
+              app: pod-identity-webhook
+          spec:
+            serviceAccountName: pod-identity-webhook
+            # webhook 自体は master 上で動かす。CCM が IRSA で動く前提なので
+            # CCM が外す前の `uninitialized` taint も tolerate しておかないと
+            # 自分自身が schedule できない（chicken-and-egg 回避）。
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                effect: NoSchedule
+              - key: node.cloudprovider.kubernetes.io/uninitialized
+                value: "true"
+                effect: NoSchedule
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            containers:
+              - name: webhook
+                image: "{{ pod_identity_webhook_image }}"
+                imagePullPolicy: IfNotPresent
+                command:
+                  - /webhook
+                  - --in-cluster=false
+                  - --namespace={{ pod_identity_webhook_namespace }}
+                  - --service-name=pod-identity-webhook
+                  - --tls-cert=/etc/webhook/certs/tls.crt
+                  - --tls-key=/etc/webhook/certs/tls.key
+                  - --annotation-prefix=eks.amazonaws.com
+                  - --token-audience=sts.amazonaws.com
+                  - --logtostderr
+                  - --port=443
+                ports:
+                  - containerPort: 443
+                volumeMounts:
+                  - name: cert
+                    mountPath: /etc/webhook/certs
+                    readOnly: true
+            volumes:
+              - name: cert
+                secret:
+                  secretName: pod-identity-webhook
+
+- name: Service
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: pod-identity-webhook
+        namespace: "{{ pod_identity_webhook_namespace }}"
+      spec:
+        ports:
+          - port: 443
+            targetPort: 443
+        selector:
+          app: pod-identity-webhook
+
+- name: webhook Deployment が Ready になるまで待機
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ pod_identity_webhook_namespace }}"
+    name: pod-identity-webhook
+  register: webhook_dep
+  retries: 30
+  delay: 5
+  until: >-
+    webhook_dep.resources | length > 0 and
+    (webhook_dep.resources[0].status.readyReplicas | default(0)) >= 1
+
+# ------------------------------------------------------------
+# MutatingWebhookConfiguration を最後に投入
+# ------------------------------------------------------------
+# webhook Pod が走ってから入れないと、admission がブロックされて他の作成が
+# こけるリスクがある。
+- name: MutatingWebhookConfiguration
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kubeconfig_path }}"
+    definition:
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingWebhookConfiguration
+      metadata:
+        name: pod-identity-webhook
+      webhooks:
+        - name: iam-for-pods.amazonaws.com
+          # v0.5/0.6 系の webhook は response に apiVersion を入れない
+          # v1beta1 風レスポンスを返すので apiserver 側で受けられるよう
+          # v1beta1 を許可する。
+          admissionReviewVersions: ["v1beta1", "v1"]
+          sideEffects: None
+          failurePolicy: Ignore
+          clientConfig:
+            service:
+              name: pod-identity-webhook
+              namespace: "{{ pod_identity_webhook_namespace }}"
+              path: /mutate
+            caBundle: "{{ pod_identity_webhook_ca_bundle_b64 }}"
+          rules:
+            - operations: ["CREATE"]
+              apiGroups: [""]
+              apiVersions: ["v1"]
+              resources: ["pods"]

@@ -1,27 +1,8 @@
 [master]
 ${master_private_ip}
 
-[ap-northeast-2a-workers]
-${ap-northeast-2a-worker-node-01}
-${ap-northeast-2a-worker-node-02}
-
-[ap-northeast-2b-workers]
-${ap-northeast-2b-worker-node-01}
-${ap-northeast-2b-worker-node-02}
-${ap-northeast-2b-worker-node-03}
-
-[workers:children]
-ap-northeast-2a-workers
-ap-northeast-2b-workers
-
 [master:vars]
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
-
-[ap-northeast-2a-workers:vars]
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
-
-[ap-northeast-2b-workers:vars]
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_b_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
 
 [all:vars]
 ansible_port=22
@@ -29,3 +10,8 @@ ansible_user=ec2-user
 ansible_ssh_private_key_file=~/.ssh/ktcloud-bastion-node-key
 vpc_id=${vpc_id}
 master_private_ip=${master_private_ip}
+cluster_name=${cluster_name}
+aws_region=${aws_region}
+kubeadm_join_command_ssm_name=${join_command_ssm}
+bastion_a_ip=${bastion_a_ip}
+bastion_b_ip=${bastion_b_ip}

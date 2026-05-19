@@ -2,10 +2,12 @@
 - name: master の初期化と CNI 適用
   hosts: master
   become: true
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/irsa.yaml"
   roles:
+    # kubeadm init は IRSA issuer URL を /etc/kubernetes/manifests/kube-apiserver.yaml に
+    # 直接焼き込む（kubeadm-config.yaml.j2 が irsa_oidc_issuer_url を参照）。
     - role: kubeadm_init
       tags: [kubeadm, init]
     - role: cni_calico
       tags: [cni, calico]
-    - role: k8s_python
-      tags: [python]

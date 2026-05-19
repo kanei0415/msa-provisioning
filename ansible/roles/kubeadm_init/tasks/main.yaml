@@ -1,10 +1,10 @@
 ---
-- name: /etc/hosts に master_private_ip を追加
+- name: /etc/hosts に master_private_ip を追加（自分自身を local 解決）
   ansible.builtin.lineinfile:
     path: /etc/hosts
     line: "127.0.0.1 {{ master_private_ip }}"
 
-- name: kubeadm / kubectl のインストール
+- name: kubeadm / kubectl のインストール (AMI に入っている前提だが冪等で確認)
   ansible.builtin.dnf:
     name:
       - kubeadm
@@ -27,10 +27,6 @@
 # ------------------------------------------------------------
 # IMDSv2 から自インスタンスの instance-id / AZ を取得
 # ------------------------------------------------------------
-# kubeadm-config.yaml の InitConfiguration.nodeRegistration.kubeletExtraArgs.provider-id
-# に `aws:///<az>/<instance-id>` 形式で埋め込むため。
-# IMDSv2 (token 必須) を使う。
-
 - name: IMDSv2 token を取得
   ansible.builtin.uri:
     url: http://169.254.169.254/latest/api/token
@@ -91,3 +87,27 @@
     owner: "{{ ec2_user }}"
     group: "{{ ec2_user }}"
     mode: "0600"
+
+# ------------------------------------------------------------
+# join command を SSM Parameter Store に書き出す
+# ------------------------------------------------------------
+# ASG worker の UserData が `aws ssm get-parameter` でこれを読み、kubeadm join する。
+# kubeadm token は default 24h で切れるので、本タスクは cluster-up のたびに refresh される。
+
+- name: 新しい join token + cert hash を含む join command を生成
+  ansible.builtin.command: kubeadm token create --print-join-command --ttl 24h
+  environment:
+    KUBECONFIG: "{{ admin_conf_path }}"
+  register: kubeadm_join_cmd
+  changed_when: true
+
+- name: 生成した join command を SSM SecureString に書き込む
+  ansible.builtin.command: >
+    aws ssm put-parameter
+    --name "{{ kubeadm_join_command_ssm_name }}"
+    --type SecureString
+    --overwrite
+    --value "{{ kubeadm_join_cmd.stdout }}"
+    --region {{ aws_region }}
+  changed_when: true
+  no_log: true   # token を log に出さない

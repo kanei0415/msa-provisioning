@@ -1,0 +1,69 @@
+---
+# ============================================================
+# Cluster Autoscaler (autoscaler/cluster-autoscaler Helm chart)
+# ============================================================
+# - awsRegion + autoDiscovery.clusterName で ASG タグから対象を発見
+# - rbac.serviceAccount.create=true + annotation で IRSA を有効化
+# - control-plane に寄せる（CA は cluster-wide singleton）
+#
+# 必須 ASG タグ (terraform/asg.tf で付与済):
+#   k8s.io/cluster-autoscaler/enabled = true
+#   k8s.io/cluster-autoscaler/<cluster> = owned
+# scale-from-zero 用 node-template/label/* タグも terraform 側で付与済。
+
+- name: autoscaler Helm リポジトリの登録
+  kubernetes.core.helm_repository:
+    name: autoscaler
+    repo_url: "https://kubernetes.github.io/autoscaler"
+    state: present
+
+- name: Cluster Autoscaler の Helm インストール
+  kubernetes.core.helm:
+    name: cluster-autoscaler
+    chart_ref: autoscaler/cluster-autoscaler
+    release_namespace: kube-system
+    kubeconfig: "{{ kubeconfig_path }}"
+    create_namespace: false
+    update_repo_cache: true
+    wait: true
+    values:
+      cloudProvider: aws
+      awsRegion: "{{ aws_region }}"
+      autoDiscovery:
+        clusterName: "{{ cluster_name }}"
+        # 上で書いた CA discovery タグ
+        tags:
+          - "k8s.io/cluster-autoscaler/enabled"
+          - "k8s.io/cluster-autoscaler/{{ cluster_name }}"
+
+      # IRSA
+      rbac:
+        serviceAccount:
+          create: true
+          name: cluster-autoscaler
+          annotations:
+            eks.amazonaws.com/role-arn: "{{ irsa_cluster_autoscaler_role_arn }}"
+
+      # master に寄せる
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+
+      # 1 master 構成のため CA は単 Pod。expander は LeastWaste にしておく
+      extraArgs:
+        v: "4"
+        stderrthreshold: info
+        logtostderr: true
+        balance-similar-node-groups: true
+        skip-nodes-with-system-pods: false
+        skip-nodes-with-local-storage: false
+        expander: least-waste
+        scale-down-enabled: true
+        scale-down-delay-after-add: 10m
+        scale-down-unneeded-time: 10m
+  register: ca_install
+  retries: 5
+  delay: 20
+  until: ca_install is success

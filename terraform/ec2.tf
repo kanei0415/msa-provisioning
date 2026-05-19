@@ -1,7 +1,14 @@
+# ============================================================
+# 静的 EC2 — master + bastion のみ
+# ============================================================
+# worker は asg.tf の aws_autoscaling_group に移管。
+# 旧来あった aws_ebs_volume / aws_volume_attachment は EBS CSI Driver で
+# 動的プロビジョニングするため削除。
+
 resource "aws_instance" "kt_cloud_vpc_node" {
   for_each = local.nodes
 
-  ami           = local.node_ami
+  ami           = each.value.role == "bastion" ? data.aws_ami.amazon_linux_2023.id : local.node_ami
   instance_type = each.value.instance_type
 
   subnet_id                   = each.value.subnet == "public" ? aws_subnet.public[each.value.az].id : aws_subnet.private[each.value.az].id
@@ -10,6 +17,12 @@ resource "aws_instance" "kt_cloud_vpc_node" {
   iam_instance_profile        = each.value.role == "bastion" ? null : aws_iam_instance_profile.ktcloud_cluster_node_profile.name
   source_dest_check           = each.value.role != "bastion"
   associate_public_ip_address = each.value.role == "bastion"
+
+  metadata_options {
+    http_tokens                 = "required"
+    http_endpoint               = "enabled"
+    http_put_response_hop_limit = 2
+  }
 
   user_data = <<-EOF
     #!/bin/bash
@@ -21,18 +34,9 @@ resource "aws_instance" "kt_cloud_vpc_node" {
     volume_type = "gp3"
     encrypted   = true
   }
-}
 
-resource "aws_ebs_volume" "worker_ebs" {
-  for_each          = { for k, v in local.nodes : k => v if can(v.ebs_size) }
-  availability_zone = each.value.az
-  size              = each.value.ebs_size
-}
-
-resource "aws_volume_attachment" "worker_ebs_attatchment" {
-  for_each = aws_ebs_volume.worker_ebs
-
-  device_name = "/dev/sdh"
-  volume_id   = each.value.id
-  instance_id = aws_instance.kt_cloud_vpc_node[each.key].id
+  tags = merge(local.common_tags, {
+    Name = each.key
+    Role = each.value.role
+  })
 }

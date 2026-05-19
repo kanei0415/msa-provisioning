@@ -7,7 +7,13 @@ locals {
 
   my_ip_cidr = "${chomp(data.http.my_ip.response_body)}/32"
 
-  node_ami = coalesce(var.node_ami_id, data.aws_ami.amazon_linux_2023.id)
+  # Packer 済 AMI を優先、無ければ AL2023（ただし AL2023 は kubelet 未導入なので
+  # 実質 ami_force ビルド前のフォールバック扱い）
+  node_ami = coalesce(
+    var.node_ami_id,
+    try(data.aws_ami.k8s_node[0].id, null),
+    data.aws_ami.amazon_linux_2023.id,
+  )
 
   AZs = {
     "ap-northeast-2a" = {
@@ -22,47 +28,14 @@ locals {
     }
   }
 
+  # 静的に立てるノード = master 1 + bastion 2。
+  # worker は aws_autoscaling_group (asg.tf) に移管したのでここからは除外。
   nodes = {
     "ap-northeast-2a-master-01" = {
       az            = "ap-northeast-2a",
       role          = "master",
       instance_type = var.master_instance_type,
       subnet        = "private"
-    }
-    "ap-northeast-2a-worker-01" = {
-      az            = "ap-northeast-2a",
-      role          = "worker",
-      instance_type = var.worker_instance_type,
-      subnet        = "private",
-      ebs_size      = 20
-    }
-    "ap-northeast-2a-worker-02" = {
-      az            = "ap-northeast-2a",
-      role          = "worker",
-      instance_type = var.worker_instance_type,
-      subnet        = "private",
-      ebs_size      = 20
-    }
-    "ap-northeast-2b-worker-01" = {
-      az            = "ap-northeast-2b",
-      role          = "worker",
-      instance_type = var.worker_instance_type,
-      subnet        = "private",
-      ebs_size      = 20
-    }
-    "ap-northeast-2b-worker-02" = {
-      az            = "ap-northeast-2b",
-      role          = "worker",
-      instance_type = var.worker_instance_type,
-      subnet        = "private",
-      ebs_size      = 20
-    }
-    "ap-northeast-2b-worker-03" = {
-      az            = "ap-northeast-2b",
-      role          = "worker",
-      instance_type = var.worker_instance_type,
-      subnet        = "private",
-      ebs_size      = 20
     }
     "ap-northeast-2a-bastion" = {
       az            = "ap-northeast-2a",

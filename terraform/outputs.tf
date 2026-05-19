@@ -9,3 +9,8 @@ output "ap-northeast-2b-bastion-connect-command" {
 output "master-node-connect-command" {
   value = "ssh -A -J ec2-user@${aws_instance.kt_cloud_vpc_node["ap-northeast-2a-bastion"].public_ip} ec2-user@${aws_instance.kt_cloud_vpc_node["ap-northeast-2a-master-01"].private_ip}"
 }
+
+output "ami_id_in_use" {
+  description = "ASG / master の AMI として実際に採用された AMI ID"
+  value       = local.node_ami
+}

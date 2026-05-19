@@ -1,0 +1,137 @@
+#!/bin/bash
+# ============================================================
+# kt-cloud-cluster worker UserData
+# ============================================================
+# AMI には kubelet/kubeadm/kubectl/containerd が焼き込まれている前提。
+# 本スクリプトは「インスタンス起動時に毎回」やる必要のあるものだけを行う:
+#   1. ホスト名を ec2 instance-id ベースに揃える
+#   2. /etc/hosts に master_private_ip → master のエントリを書く
+#   3. IMDS から AZ / instance-id を取って providerID 用に kubelet drop-in を生成
+#   4. SSM Parameter Store から kubeadm join command を取得（placeholder の間はポーリング）
+#   5. provider-id を渡しつつ kubeadm join を実行
+# ============================================================
+
+set -euxo pipefail
+
+# UserData は cloud-init の "boot" stage で 1 度だけ動く。冪等にするため state file を見る
+STATE_DIR=/var/lib/kt-cloud
+STATE_FILE=$STATE_DIR/joined
+mkdir -p "$STATE_DIR"
+
+if [[ -f "$STATE_FILE" ]]; then
+  echo "already joined; skip"
+  exit 0
+fi
+
+CLUSTER_NAME="${cluster_name}"
+AWS_REGION="${aws_region}"
+JOIN_SSM_PARAM="${join_command_ssm}"
+MASTER_PRIVATE_IP="${master_private_ip}"
+CRI_SOCKET="${containerd_cri_sock}"
+
+# ------------------------------------------------------------
+# Step 1: IMDSv2 token + instance metadata
+# ------------------------------------------------------------
+TOKEN=$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+INSTANCE_ID=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/placement/availability-zone)
+PRIVATE_IP=$(curl -fsS -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/local-ipv4)
+
+PROVIDER_ID="aws:///$AZ/$INSTANCE_ID"
+
+# ------------------------------------------------------------
+# Step 1.5: 自分自身に LBC discovery tag を付ける
+# ------------------------------------------------------------
+# AWS Auto Scaling は LT tag_specifications で `/` を含む key を弾くので、
+# `kubernetes.io/cluster/<cluster-name>=owned` は launch 後に自分で付ける。
+# AWS LBC が target-type=instance で discover するために必須。
+aws ec2 create-tags \
+  --region "$AWS_REGION" \
+  --resources "$INSTANCE_ID" \
+  --tags "Key=kubernetes.io/cluster/$CLUSTER_NAME,Value=owned" \
+  || echo "self-tag failed; continuing"
+
+# ------------------------------------------------------------
+# Step 2: hostname / /etc/hosts
+# ------------------------------------------------------------
+HOSTNAME="$CLUSTER_NAME-worker-$INSTANCE_ID"
+hostnamectl set-hostname "$HOSTNAME"
+
+# master のエントリ
+if ! grep -qE "\smaster$" /etc/hosts; then
+  echo "$MASTER_PRIVATE_IP master" >> /etc/hosts
+fi
+# 自分自身
+if ! grep -qE "\s$HOSTNAME$" /etc/hosts; then
+  echo "$PRIVATE_IP $HOSTNAME" >> /etc/hosts
+fi
+
+# ------------------------------------------------------------
+# Step 3: SSM から join command を取得（placeholder の間はポーリング）
+# ------------------------------------------------------------
+# master 側で `kubeadm token create --print-join-command` の結果が
+# SSM に書かれるまで最大 30 分待つ。
+JOIN_CMD=""
+for i in $(seq 1 180); do
+  set +e
+  JOIN_CMD=$(aws ssm get-parameter \
+    --name "$JOIN_SSM_PARAM" \
+    --with-decryption \
+    --region "$AWS_REGION" \
+    --query 'Parameter.Value' --output text 2>/dev/null)
+  rc=$?
+  set -e
+  if [[ $rc -eq 0 && -n "$JOIN_CMD" && "$JOIN_CMD" != "__PLACEHOLDER__" && "$JOIN_CMD" == kubeadm\ join* ]]; then
+    echo "got join command on try $i"
+    break
+  fi
+  echo "join command not ready (try $i/180); sleep 10s"
+  sleep 10
+done
+
+if [[ -z "$JOIN_CMD" || "$JOIN_CMD" == "__PLACEHOLDER__" ]]; then
+  echo "timed out waiting for SSM join command" >&2
+  exit 1
+fi
+
+# kubeadm join command 例:
+#   kubeadm join 10.0.2.10:6443 --token xxx.xxx --discovery-token-ca-cert-hash sha256:...
+# これに `--cri-socket` と `--node-name` と provider-id 用の kubelet flag を足す。
+
+# ------------------------------------------------------------
+# Step 4: kubelet drop-in で provider-id / cloud-provider を渡す
+# ------------------------------------------------------------
+# kubeadm の JoinConfiguration を組むのではなく kubelet 起動引数で渡す方が
+# UserData では取り回しやすい。kubeadm join 後に kubelet が読む drop-in を
+# 先に置いておけば、kubelet 初回起動時から効く。
+mkdir -p /etc/systemd/system/kubelet.service.d
+cat >/etc/systemd/system/kubelet.service.d/20-aws-cloud-provider.conf <<EOF
+[Service]
+Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external --provider-id=$PROVIDER_ID --hostname-override=$HOSTNAME"
+EOF
+systemctl daemon-reload
+
+# ------------------------------------------------------------
+# Step 5: kubeadm join 実行
+# ------------------------------------------------------------
+# --node-name で hostname を明示すると CCM の InstanceID 解決と一致しやすい
+JOIN_ARGS=(
+  --cri-socket "$CRI_SOCKET"
+  --node-name "$HOSTNAME"
+)
+
+# 既にメンバーかチェック
+if [[ -f /etc/kubernetes/kubelet.conf ]]; then
+  echo "kubelet.conf already exists; assuming joined"
+else
+  eval "$JOIN_CMD $${JOIN_ARGS[*]}"
+fi
+
+# state 書き込み（次回起動時の再 join 防止）
+touch "$STATE_FILE"
+
+echo "kt-cloud worker bootstrap complete: $HOSTNAME ($PROVIDER_ID)"

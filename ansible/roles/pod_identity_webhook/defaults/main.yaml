@@ -1,0 +1,7 @@
+---
+pod_identity_webhook_namespace: kube-system
+# v0.6.4+: proper admission.k8s.io/v1 response format (v0.5.x only echoed
+# v1beta1-style {"response":...} without top-level apiVersion, which apiserver
+# rejected as malformed).
+pod_identity_webhook_version: v0.6.4
+pod_identity_webhook_image: amazon/amazon-eks-pod-identity-webhook:v0.6.4

@@ -1,29 +1,42 @@
 ---
 # ============================================================
-# クラスタ アドオン
+# クラスタ アドオン（IRSA + ASG 対応版）
 # ============================================================
-# kubelet が --cloud-provider=external で動くため、全 node が join 直後は
-# `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint を持つ。
-# CoreDNS Deployment はこの taint を tolerate しないので、CCM が taint を
-# 除去するまで Pending のまま。
+# 順序が結構厳密なので注意:
 #
-# よって順序は厳密に:
-#   1) helm binary 導入
-#   2) AWS CCM 投入 → uninitialized taint 除去（このタイミングで coredns が Running になる）
-#   3) kube-system 全 pod が Ready になるのを確認してから残りの addon を入れる
+#   1) helm                       : helm binary を master に配置
+#   2) irsa_oidc                  : JWKS を S3 に上げ、apiserver の IRSA flag を確認
+#   3) pod_identity_webhook       : ServiceAccount 注入 webhook（IRSA を動かす前提）
+#   4) aws_ccm  (IRSA)            : node の uninitialized taint を除去
+#                                   ── ここで CoreDNS が Running になる
+#   5) (wait kube-system Ready)
+#   6) aws_lbc       (IRSA)
+#   7) aws_ebs_csi   (IRSA)
+#   8) cluster_autoscaler (IRSA)
+#   9) wait_workers               : ASG worker が join するのを待つ
+#  10) argocd
+#  11) traefik (deploy_traefik=true)
 
-- name: 事前段 — Helm と AWS CCM
+- name: 事前段 — Helm / IRSA OIDC / Pod Identity Webhook / CCM
   hosts: master
   become: true
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/irsa.yaml"
   roles:
     - role: helm
       tags: [helm]
+    - role: irsa_oidc
+      tags: [irsa, oidc]
+    - role: pod_identity_webhook
+      tags: [pod_identity_webhook, irsa]
     - role: aws_ccm
       tags: [ccm, aws_ccm]
 
-- name: 本段 — AWS LBC / ArgoCD / Traefik
+- name: 本段 — LBC / EBS CSI / Cluster Autoscaler / wait / ArgoCD / Traefik
   hosts: master
   become: true
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/irsa.yaml"
   pre_tasks:
     - name: kube-system の全 pod が Running/Succeeded になるまで待つ
       ansible.builtin.shell: |
@@ -45,6 +58,14 @@
   roles:
     - role: aws_lbc
       tags: [lbc, aws_lbc]
+    - role: aws_ebs_csi
+      tags: [ebs_csi, aws_ebs_csi]
+    - role: cluster_autoscaler
+      tags: [ca, cluster_autoscaler]
+    - role: wait_workers
+      tags: [wait_workers]
+      vars:
+        worker_expected_count: "{{ (worker_asg_names | length) * worker_asg_desired_per_az | default(2) }}"
     - role: argocd
       tags: [argocd]
     - role: traefik

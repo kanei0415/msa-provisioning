@@ -17,10 +17,13 @@ argocd_root_app_repo: "https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.
 argocd_root_app_path: "Setup"
 argocd_root_path: "/argocd"
 
-aws_region: "ap-northeast-2"
-cluster_name: "kt-cloud-cluster"
+# aws_region は terraform inventory が all:vars に流すのでこちらは override 用 fallback
 aws_lbc_namespace: "kube-system"
 aws_ccm_namespace: "kube-system"
 
-deploy_traefik: false
+# ASG 化により Traefik は本構成で常時 NLB を立てる前提（destroy-all の cleanup 対象でもある）
+deploy_traefik: true
 traefik_namespace: "traefik"
+
+# Terraform 側 var.worker_asg_desired_per_az と揃える（wait_workers の見積もりに使う）
+worker_asg_desired_per_az: 2

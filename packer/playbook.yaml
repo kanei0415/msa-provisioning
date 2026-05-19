@@ -1,0 +1,77 @@
+---
+# ============================================================
+# Packer ビルド時にビルダー EC2 に対して実行する Ansible playbook
+# ============================================================
+# 既存の ansible/roles を再利用して k8s-node 用バイナリ・前提設定を焼き込む。
+# ここで動かすロールは「インスタンス起動時に毎回やる必要が無い、永続化可能」
+# な作業に限定する。kubeadm init/join, provider-id, ホスト名解決は実行時。
+#
+# - k8s_prereqs   : swapoff, modules-load, sysctl
+# - k8s_packages  : kubelet/kubeadm/kubectl install + kubelet enable
+# - containerd    : containerd install + config.toml + enable
+#
+# 注意: k8s_prereqs 内の `master_private_ip` 依存タスク（/etc/hosts への
+# master 行追加）はビルド時には実行できない（master_private_ip 未定義）。
+# そのため packer プロビジョン時は master_private_ip="127.0.0.1" を渡し、
+# 後段で起動時にきちんと正しい IP に書き換えるよう UserData 側で再処理する。
+
+- name: k8s-node 用 AMI を焼く
+  hosts: default
+  become: true
+  gather_facts: true
+
+  vars:
+    # Packer の extra_arguments で上書きされる
+    kubernetes_version: "1.30"
+    # ビルド時用ダミー（実運用では UserData / cloud-init で書き換える）
+    master_private_ip: "127.0.0.1"
+    containerd_cri_socket: "unix:///var/run/containerd/containerd.sock"
+
+  roles:
+    - role: k8s_prereqs
+      tags: [prereqs]
+    - role: k8s_packages
+      tags: [packages]
+    - role: containerd
+      tags: [containerd]
+
+  post_tasks:
+    # AMI から起動したインスタンスは初回 boot で hostname と /etc/hosts を
+    # cloud-init / UserData で書き換える。ビルド時に master IP として埋めた
+    # 127.0.0.1 のエントリをここで除去しておく。
+    - name: ビルド時に書き込まれた master 用エントリを除去
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '\smaster$'
+        state: absent
+
+    # AWS CLI v2 を入れておく（worker UserData で SSM:GetParameter を叩くため）
+    - name: AWS CLI v2 のインストール（aws-cli のローカル展開）
+      ansible.builtin.shell: |
+        set -eux
+        if command -v aws >/dev/null 2>&1 && aws --version 2>&1 | grep -q 'aws-cli/2'; then
+          echo "aws-cli v2 already installed"; exit 0
+        fi
+        cd /tmp
+        curl -fsSL -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+        unzip -q -o awscliv2.zip
+        sudo ./aws/install --update
+        rm -rf /tmp/aws /tmp/awscliv2.zip
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: /etc/kt-cloud ディレクトリ
+      ansible.builtin.file:
+        path: /etc/kt-cloud
+        state: directory
+        mode: "0755"
+
+    - name: AMI metadata を記録（trace 用）
+      ansible.builtin.copy:
+        dest: /etc/kt-cloud/ami-info
+        mode: "0644"
+        content: |
+          built_by=packer
+          kubernetes_version={{ kubernetes_version }}
+          built_at={{ ansible_date_time.iso8601 }}

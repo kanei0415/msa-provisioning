@@ -1,7 +1,0 @@
----
-- name: worker ノードを cluster に join
-  hosts: workers
-  become: true
-  roles:
-    - role: kubeadm_join_worker
-      tags: [join, workers]

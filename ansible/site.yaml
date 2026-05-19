@@ -1,4 +1,13 @@
+---
+# site.yaml — Packer AMI + ASG worker 構成版
+#
+# 流れ:
+#   1) bootstrap.yaml      : master 上で python 等の追加依存を整える
+#                            （ASG worker は AMI + UserData で自走するので扱わない）
+#   2) control-plane.yaml  : master で kubeadm init → CNI 適用 → join command を SSM に書く
+#   3) addons.yaml         : IRSA OIDC → pod-identity-webhook → CCM → LBC →
+#                            EBS CSI → Cluster Autoscaler → wait workers →
+#                            ArgoCD → Traefik
 - import_playbook: playbooks/bootstrap.yaml
 - import_playbook: playbooks/control-plane.yaml
-- import_playbook: playbooks/workers.yaml
 - import_playbook: playbooks/addons.yaml

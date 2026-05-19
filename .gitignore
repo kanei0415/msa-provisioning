@@ -26,3 +26,5 @@ ansible/inventory.ini
 .claude
 
 .kube
+
+record_result.mp4
