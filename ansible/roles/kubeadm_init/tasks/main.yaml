@@ -24,6 +24,43 @@
     state: directory
     mode: "0755"
 
+# ------------------------------------------------------------
+# IMDSv2 から自インスタンスの instance-id / AZ を取得
+# ------------------------------------------------------------
+# kubeadm-config.yaml の InitConfiguration.nodeRegistration.kubeletExtraArgs.provider-id
+# に `aws:///<az>/<instance-id>` 形式で埋め込むため。
+# IMDSv2 (token 必須) を使う。
+
+- name: IMDSv2 token を取得
+  ansible.builtin.uri:
+    url: http://169.254.169.254/latest/api/token
+    method: PUT
+    headers:
+      X-aws-ec2-metadata-token-ttl-seconds: "60"
+    return_content: true
+  register: imds_token
+
+- name: 自インスタンスの instance-id を取得
+  ansible.builtin.uri:
+    url: http://169.254.169.254/latest/meta-data/instance-id
+    headers:
+      X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+    return_content: true
+  register: imds_instance_id
+
+- name: 自インスタンスの AZ を取得
+  ansible.builtin.uri:
+    url: http://169.254.169.254/latest/meta-data/placement/availability-zone
+    headers:
+      X-aws-ec2-metadata-token: "{{ imds_token.content }}"
+    return_content: true
+  register: imds_az
+
+- name: IMDS から取得した値を fact 化
+  ansible.builtin.set_fact:
+    aws_instance_id: "{{ imds_instance_id.content }}"
+    aws_instance_az: "{{ imds_az.content }}"
+
 - name: kubeadm-config.yaml の生成
   ansible.builtin.template:
     src: kubeadm-config.yaml.j2

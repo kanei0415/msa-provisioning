@@ -1,0 +1,76 @@
+---
+# ============================================================
+# AWS Cloud Controller Manager (out-of-tree CCM)
+# ============================================================
+# 役割:
+#   - kubelet (--cloud-provider=external) が node 登録時に付与する
+#     `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint を除去
+#   - node に topology.kubernetes.io/zone, region などの AWS 由来の label を付与
+#   - node 削除時に EC2 instance の存在を確認して cleanup
+#
+# 本クラスタでの限定設定:
+#   - configure-cloud-routes=false : Calico (IPIP) が pod NW を完結させる
+#   - Service type=LoadBalancer は AWS LBC が担当するため CCM の service
+#     コントローラは事実上未使用（無効化はできないが衝突しない）
+#
+# 認証:
+#   - master ノードの instance profile (= ktcloud-cluster-node-role) に
+#     terraform/iam.tf で CCM 用 inline policy を attach 済み
+#   - CCM Pod は host network で動き、IMDS 経由で credential を得る
+#
+# providerID は kubeadm の InitConfiguration / JoinConfiguration の
+# kubeletExtraArgs で先にセット済 (aws:///<az>/<instance-id>)。
+# CCM はこれを参照して EC2 instance を引く。
+
+- name: cloud-provider-aws Helm リポジトリの登録
+  kubernetes.core.helm_repository:
+    name: aws-cloud-controller-manager
+    repo_url: "https://kubernetes.github.io/cloud-provider-aws"
+    state: present
+
+- name: AWS Cloud Controller Manager の Helm インストール
+  kubernetes.core.helm:
+    name: aws-cloud-controller-manager
+    chart_ref: aws-cloud-controller-manager/aws-cloud-controller-manager
+    release_namespace: "{{ aws_ccm_namespace }}"
+    kubeconfig: "{{ kubeconfig_path }}"
+    create_namespace: false
+    update_repo_cache: true
+    wait: true
+    values:
+      args:
+        - --v=2
+        - --cloud-provider=aws
+        - --cluster-name={{ cluster_name }}
+        - --configure-cloud-routes=false
+        - --use-service-account-credentials=true
+      # control-plane でのみ動かす。kubeadm の control-plane taint と
+      # kubelet の uninitialized taint を tolerate する。
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node.cloudprovider.kubernetes.io/uninitialized
+          value: "true"
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+  register: aws_ccm_install
+  retries: 5
+  delay: 20
+  until: aws_ccm_install is success
+
+- name: CCM が master の uninitialized taint を除去するまで待機
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl --kubeconfig={{ admin_conf_path }} get node \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints[?(@.key=="node.cloudprovider.kubernetes.io/uninitialized")].key}{"\n"}{end}' \
+      | awk '$2 != "" { bad=1 } END { exit bad ? 1 : 0 }'
+  args:
+    executable: /bin/bash
+  register: ccm_taint_check
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: ccm_taint_check.rc == 0

@@ -1,5 +1,27 @@
 ---
-- name: クラスタ アドオン（helm / AWS LBC / ArgoCD / Traefik）
+# ============================================================
+# クラスタ アドオン
+# ============================================================
+# kubelet が --cloud-provider=external で動くため、全 node が join 直後は
+# `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint を持つ。
+# CoreDNS Deployment はこの taint を tolerate しないので、CCM が taint を
+# 除去するまで Pending のまま。
+#
+# よって順序は厳密に:
+#   1) helm binary 導入
+#   2) AWS CCM 投入 → uninitialized taint 除去（このタイミングで coredns が Running になる）
+#   3) kube-system 全 pod が Ready になるのを確認してから残りの addon を入れる
+
+- name: 事前段 — Helm と AWS CCM
+  hosts: master
+  become: true
+  roles:
+    - role: helm
+      tags: [helm]
+    - role: aws_ccm
+      tags: [ccm, aws_ccm]
+
+- name: 本段 — AWS LBC / ArgoCD / Traefik
   hosts: master
   become: true
   pre_tasks:
@@ -21,8 +43,6 @@
       delay: 10
       until: kube_system_ready.rc == 0
   roles:
-    - role: helm
-      tags: [helm]
     - role: aws_lbc
       tags: [lbc, aws_lbc]
     - role: argocd

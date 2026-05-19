@@ -20,6 +20,7 @@ argocd_root_path: "/argocd"
 aws_region: "ap-northeast-2"
 cluster_name: "kt-cloud-cluster"
 aws_lbc_namespace: "kube-system"
+aws_ccm_namespace: "kube-system"
 
 deploy_traefik: false
 traefik_namespace: "traefik"

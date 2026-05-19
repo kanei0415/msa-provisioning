@@ -147,6 +147,10 @@ cluster-addons: ## addons.yaml のみ実行（Helm + AWS LBC + ArgoCD）
 cluster-clear: ## clean.yaml 実行（kubeadm reset + /etc/kubernetes,/var/lib/etcd 削除）
 	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini playbooks/clean.yaml
 
+.PHONY: irsa-setup
+irsa-setup: ## IRSA OIDC セットアップ（discovery 文書 S3 アップロード + apiserver 再構成）
+	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini playbooks/irsa.yaml
+
 # ============================================================
 # kubeconfig / kubectl ローカルアクセス
 # ============================================================

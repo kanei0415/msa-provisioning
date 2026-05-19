@@ -1,0 +1,186 @@
+---
+# ============================================================
+# IRSA OIDC セットアップ（自己管理 kubeadm クラスタ用）
+# ============================================================
+# 1) kube-apiserver の JWKS を取得
+# 2) openid-configuration をレンダリング
+# 3) 両方を S3 (terraform で作成済) にアップロード
+# 4) discovery endpoint が public reachable か確認
+# 5) /etc/kubernetes/manifests/kube-apiserver.yaml に IRSA 用 flag を追加
+# 6) apiserver が再起動して healthz が返るまで待機
+
+# ------------------------------------------------------------
+# 前提変数チェック
+# ------------------------------------------------------------
+- name: terraform が irsa group_vars を書き出していることを確認
+  ansible.builtin.assert:
+    that:
+      - irsa_oidc_bucket is defined
+      - irsa_oidc_issuer_url is defined
+      - irsa_oidc_region is defined
+      - irsa_oidc_issuer_host is defined
+    fail_msg: "terraform/irsa.tf が apply されておらず ansible/group_vars/irsa.yaml が無い。`make tf-apply` を先に実行する。"
+
+# ------------------------------------------------------------
+# Phase 1: discovery 文書を S3 にアップロード
+# ------------------------------------------------------------
+
+- name: kube-apiserver の JWKS を取得
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ admin_conf_path }} get --raw /openid/v1/jwks
+  register: jwks_raw
+  changed_when: false
+
+- name: openid-configuration を laptop 側に書き出す
+  ansible.builtin.template:
+    src: openid-configuration.json.j2
+    dest: /tmp/{{ irsa_oidc_bucket }}-openid-configuration.json
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: JWKS を laptop 側に書き出す
+  ansible.builtin.copy:
+    content: "{{ jwks_raw.stdout }}\n"
+    dest: /tmp/{{ irsa_oidc_bucket }}-jwks.json
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: openid-configuration を S3 にアップロード
+  ansible.builtin.command: >
+    aws s3api put-object
+    --bucket {{ irsa_oidc_bucket }}
+    --key .well-known/openid-configuration
+    --body /tmp/{{ irsa_oidc_bucket }}-openid-configuration.json
+    --content-type application/json
+    --region {{ irsa_oidc_region }}
+  delegate_to: localhost
+  become: false
+  changed_when: true
+
+- name: JWKS を S3 にアップロード
+  ansible.builtin.command: >
+    aws s3api put-object
+    --bucket {{ irsa_oidc_bucket }}
+    --key openid/v1/jwks
+    --body /tmp/{{ irsa_oidc_bucket }}-jwks.json
+    --content-type application/json
+    --region {{ irsa_oidc_region }}
+  delegate_to: localhost
+  become: false
+  changed_when: true
+
+- name: discovery endpoint が 200 で返るまで待機（最大 30s）
+  ansible.builtin.uri:
+    url: "{{ irsa_oidc_issuer_url }}/.well-known/openid-configuration"
+    return_content: true
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  register: discovery_check
+  retries: 10
+  delay: 3
+  until: discovery_check.status == 200
+
+- name: JWKS endpoint が 200 で返るまで待機
+  ansible.builtin.uri:
+    url: "{{ irsa_oidc_issuer_url }}/openid/v1/jwks"
+    return_content: true
+    status_code: 200
+  delegate_to: localhost
+  become: false
+  register: jwks_check
+  retries: 10
+  delay: 3
+  until: jwks_check.status == 200
+
+# ------------------------------------------------------------
+# Phase 2: kube-apiserver manifest に IRSA flag を追加
+# ------------------------------------------------------------
+# 冪等性: 既に IRSA 用 issuer に置き換わっていれば skip。
+
+- name: 現在の --service-account-issuer 行を取得
+  ansible.builtin.shell: |
+    grep -E '^\s*- --service-account-issuer=' /etc/kubernetes/manifests/kube-apiserver.yaml | head -1
+  register: current_issuer_line
+  changed_when: false
+
+- name: kube-apiserver が既に IRSA 設定済か判定
+  ansible.builtin.set_fact:
+    irsa_already_applied: "{{ irsa_oidc_issuer_url in current_issuer_line.stdout }}"
+
+- name: kube-apiserver manifest を patch（初回のみ）
+  when: not irsa_already_applied
+  block:
+    - name: manifest のバックアップ
+      ansible.builtin.copy:
+        src: /etc/kubernetes/manifests/kube-apiserver.yaml
+        dest: /etc/kubernetes/kube-apiserver.yaml.pre-irsa
+        remote_src: true
+        mode: "0600"
+        force: false
+
+    - name: --service-account-issuer を IRSA URL に置換
+      ansible.builtin.replace:
+        path: /etc/kubernetes/manifests/kube-apiserver.yaml
+        regexp: '^(\s+)- --service-account-issuer=.*$'
+        replace: '\1- --service-account-issuer={{ irsa_oidc_issuer_url }}'
+
+    - name: --api-audiences を追加
+      ansible.builtin.lineinfile:
+        path: /etc/kubernetes/manifests/kube-apiserver.yaml
+        line: "    - --api-audiences=sts.amazonaws.com,https://kubernetes.default.svc.cluster.local"
+        insertafter: '^\s+- --service-account-issuer='
+
+    - name: --service-account-jwks-uri を追加
+      ansible.builtin.lineinfile:
+        path: /etc/kubernetes/manifests/kube-apiserver.yaml
+        line: "    - --service-account-jwks-uri={{ irsa_oidc_issuer_url }}/openid/v1/jwks"
+        insertafter: '^\s+- --api-audiences='
+
+- name: 既に適用済の表示
+  ansible.builtin.debug:
+    msg: "kube-apiserver は既に IRSA issuer ({{ irsa_oidc_issuer_url }}) で設定済。skip。"
+  when: irsa_already_applied
+
+# ------------------------------------------------------------
+# Phase 3: kube-apiserver が再起動・healthz が返るまで待つ
+# ------------------------------------------------------------
+
+- name: kube-apiserver の再起動を確実にするため少し待機
+  ansible.builtin.pause:
+    seconds: 10
+  when: not irsa_already_applied
+
+- name: kube-apiserver の 6443 が listen するまで待機
+  ansible.builtin.wait_for:
+    port: 6443
+    host: "{{ master_private_ip }}"
+    timeout: 180
+
+- name: /healthz が ok を返すまで待機
+  ansible.builtin.shell: |
+    kubectl --kubeconfig={{ admin_conf_path }} get --raw /healthz
+  register: healthz
+  retries: 30
+  delay: 5
+  until: healthz.rc == 0 and healthz.stdout == "ok"
+  changed_when: false
+
+- name: 新しい issuer で token が発行されているか確認
+  ansible.builtin.shell: |
+    set -o pipefail
+    TOKEN=$(kubectl --kubeconfig={{ admin_conf_path }} create token default -n default --audience=sts.amazonaws.com --duration=600s)
+    echo "$TOKEN" | awk -F. '{print $2}' | base64 -d 2>/dev/null
+  args:
+    executable: /bin/bash
+  register: token_payload
+  changed_when: false
+
+- name: 発行された token の iss が IRSA URL になっているか assert
+  ansible.builtin.assert:
+    that:
+      - irsa_oidc_issuer_url in token_payload.stdout
+    fail_msg: "発行された token の iss が {{ irsa_oidc_issuer_url }} ではない: {{ token_payload.stdout }}"
+    success_msg: "OK — apiserver が IRSA issuer で token を発行している"

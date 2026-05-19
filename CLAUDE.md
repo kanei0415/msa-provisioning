@@ -22,7 +22,7 @@ Cluster teardown: `make cluster-clear`. Full destroy: `make destroy-all`.
 
 ## Out-of-band prerequisites (not created by this repo)
 
-- **IAM role `ktcloud-cluster-node-role`** must already exist — `terraform/iam.tf` uses a `data` source, not a resource. It needs the AWS Load Balancer Controller policy from https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/install/iam_policy.json attached, plus the PassRole permissions referenced in the README.
+- **IAM role `ktcloud-cluster-node-role`** must already exist — `terraform/iam.tf` uses a `data` source, not a resource. It needs the AWS Load Balancer Controller policy from https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/install/iam_policy.json attached, plus the PassRole permissions referenced in the README. Terraform additionally attaches an inline `ktcloud-cluster-ccm-policy` for the AWS Cloud Controller Manager (EC2/ELB/KMS describe + tag/modify + service-linked-role).
 - **AWS CLI credentials** for an IAM principal with EC2/VPC/ELB/EFS/IAM-PassRole permissions. Configure via `aws configure`.
 - **S3 bucket** for Terraform remote state (referenced by `backend.tfvars`).
 
@@ -41,12 +41,14 @@ Cluster teardown: `make cluster-clear`. Full destroy: `make destroy-all`.
 
 **Tags** — every cluster node carries `kubernetes.io/cluster/kt-cloud-cluster: owned`; subnets carry `kubernetes.io/role/elb: 1`. AWS Load Balancer Controller relies on these for discovery — preserve them on any new instance/subnet resources.
 
+**Cloud integration** — kubelet runs with `--cloud-provider=external` on every node and is given `--provider-id=aws:///<az>/<instance-id>` at kubeadm init/join time (values pulled from IMDSv2 inside `kubeadm_init` / `kubeadm_join_worker` roles). The out-of-tree AWS CCM (`roles/aws_ccm`) runs as a DaemonSet on the master with `--configure-cloud-routes=false` (Calico handles pod NW) and is what removes the `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint kubelet adds at registration. Pre-setting providerID via kubeletExtraArgs means AWS LBC can resolve Node → EC2 InstanceID immediately even before CCM finishes — this is the load-bearing piece for `targetType: instance` NodePort registration. CCM IAM permissions are attached as an inline policy in `terraform/iam.tf` to the pre-existing `ktcloud-cluster-node-role`.
+
 ## Ansible playbook order (`site.yaml` imports)
 
 1. `playbooks/bootstrap.yaml` (hosts: `all`) — `k8s_prereqs` (swapoff, kernel modules, sysctl, `/etc/hosts` master entry), `k8s_packages` (kubelet/kubeadm/kubectl), `containerd` (CRI).
 2. `playbooks/control-plane.yaml` (hosts: `master`) — `kubeadm_init` (renders `kubeadm-config.yaml.j2` with `controlPlaneEndpoint: <master-private-ip>:6443`, runs `kubeadm init`, sets up `~/.kube/config` for `ec2-user`), `cni_calico` (applies Calico v3.27.0 manifest), `k8s_python` (python deps for `kubernetes.core.*` modules).
 3. `playbooks/workers.yaml` (hosts: `workers`) — `kubeadm_join_worker` generates a join token on master and runs `kubeadm join` on each worker.
-4. `playbooks/addons.yaml` (hosts: `master`) — `helm` (installs Helm binary), `aws_lbc` (Helm-installs `aws-load-balancer-controller` in `kube-system` with `clusterName: kt-cloud-cluster`), `argocd` (installs ArgoCD via Helm with `--rootpath=/argocd --insecure`, creates `root-app` Application pointing at the external manifest repo `https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git`, **deletes the ALB controller's mutating/validating webhooks first** as a workaround — keep that step). `traefik` runs only when `deploy_traefik: true`.
+4. `playbooks/addons.yaml` (hosts: `master`) — split into two plays. **Play 1** runs `helm` then `aws_ccm` (Helm-installs the out-of-tree AWS Cloud Controller Manager and blocks until the `node.cloudprovider.kubernetes.io/uninitialized` taint is gone from every node — this must come first because CoreDNS won't schedule until that taint is removed). **Play 2** waits for all kube-system pods Running, then runs `aws_lbc` (Helm-installs `aws-load-balancer-controller` in `kube-system` with `clusterName: kt-cloud-cluster`), `argocd` (installs ArgoCD via Helm with `--rootpath=/argocd --insecure`, creates `root-app` Application pointing at the external manifest repo `https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git`, **deletes the ALB controller's mutating/validating webhooks first** as a workaround — keep that step). `traefik` runs only when `deploy_traefik: true`.
 
 `playbooks/clean.yaml` (hosts: `all`) — `k8s_clear` runs `kubeadm reset` and wipes `/etc/kubernetes`, `/var/lib/etcd`, CNI ifaces.
 

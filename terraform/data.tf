@@ -11,3 +11,7 @@ data "aws_ami" "amazon_linux_2023" {
 data "http" "my_ip" {
   url = "https://ifconfig.me/ip"
 }
+
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}

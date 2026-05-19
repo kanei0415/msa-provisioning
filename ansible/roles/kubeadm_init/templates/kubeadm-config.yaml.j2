@@ -1,4 +1,19 @@
 ---
+# InitConfiguration: master ノード自身の kubelet 起動オプション。
+# AWS CCM (out-of-tree cloud-controller-manager) に node 制御を任せるため:
+#   - cloud-provider=external で kubelet を in-tree AWS から切り離す
+#   - provider-id を IMDS から取得した値で先にセット
+#     → kubelet 登録直後から .spec.providerID が埋まり、AWS LBC が
+#       targetType: instance で即 EC2 InstanceId を解決できる
+#     → CCM はこの providerID を見て uninitialized taint を除去する
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: "{{ containerd_cri_socket }}"
+  kubeletExtraArgs:
+    cloud-provider: external
+    provider-id: "aws:///{{ aws_instance_az }}/{{ aws_instance_id }}"
+---
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
 kubernetesVersion: "v{{ kubernetes_version }}.0"
@@ -10,6 +25,19 @@ apiServer:
     - "{{ ansible_default_ipv4.address }}"
     - "127.0.0.1"
     - "localhost"
+{% if irsa_oidc_issuer_url is defined %}
+  # IRSA: kube-apiserver を OIDC issuer 化する。kubeadm init 時にこの値が
+  # static pod manifest に埋め込まれる。discovery 文書の S3 アップロードは
+  # 別途 ansible/playbooks/irsa.yaml で実施。
+  extraArgs:
+    service-account-issuer: "{{ irsa_oidc_issuer_url }}"
+    api-audiences: "sts.amazonaws.com,https://kubernetes.default.svc.cluster.local"
+    service-account-jwks-uri: "{{ irsa_oidc_issuer_url }}/openid/v1/jwks"
+{% endif %}
+controllerManager:
+  # CCM に node/route/service コントローラを譲るため KCM 側を external 指定。
+  extraArgs:
+    cloud-provider: external
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
