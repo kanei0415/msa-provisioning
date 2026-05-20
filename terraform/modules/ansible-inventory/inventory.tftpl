@@ -2,7 +2,7 @@
 ${master_private_ip}
 
 [master:vars]
-ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_a_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -q ec2-user@${bastion_b_ip} -i ~/.ssh/ktcloud-bastion-node-key"'
 
 [all:vars]
 ansible_port=22
@@ -13,5 +13,4 @@ master_private_ip=${master_private_ip}
 cluster_name=${cluster_name}
 aws_region=${aws_region}
 kubeadm_join_command_ssm_name=${join_command_ssm}
-bastion_a_ip=${bastion_a_ip}
 bastion_b_ip=${bastion_b_ip}

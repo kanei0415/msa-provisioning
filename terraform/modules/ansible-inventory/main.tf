@@ -21,7 +21,6 @@ resource "local_file" "inventory" {
   file_permission = "0644"
 
   content = templatefile("${path.module}/inventory.tftpl", {
-    bastion_a_ip      = var.nodes["ap-northeast-2a-bastion"].public_ip
     bastion_b_ip      = var.nodes["ap-northeast-2b-bastion"].public_ip
     master_private_ip = var.nodes["ap-northeast-2a-master-01"].private_ip
     vpc_id            = var.vpc_id

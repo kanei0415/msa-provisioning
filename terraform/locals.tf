@@ -28,20 +28,16 @@ locals {
     }
   }
 
-  # 静的に立てるノード = master 1 + bastion 2。
+  # 静的に立てるノード = master 1 + bastion 1。
   # worker は aws_autoscaling_group (asg.tf) に移管したのでここからは除外。
+  # bastion は AZ 2b に 1 台のみ。cluster-node-sg は VPC 全域から到達可能なので
+  # 2a private の master へも 2b bastion 経由で SSH できる。
   nodes = {
     "ap-northeast-2a-master-01" = {
       az            = "ap-northeast-2a",
       role          = "master",
       instance_type = var.master_instance_type,
       subnet        = "private"
-    }
-    "ap-northeast-2a-bastion" = {
-      az            = "ap-northeast-2a",
-      role          = "bastion",
-      instance_type = var.bastion_instance_type,
-      subnet        = "public"
     }
     "ap-northeast-2b-bastion" = {
       az            = "ap-northeast-2b",

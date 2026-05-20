@@ -16,16 +16,16 @@ GitOps: ArgoCD（`https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git` 
 ```
 VPC 10.0.0.0/16  (ap-northeast-2)
 ├── ap-northeast-2a
-│   ├── public  10.0.1.0/24   → bastion-a (NAT GW-a)
+│   ├── public  10.0.1.0/24   → NAT GW-a
 │   └── private 10.0.2.0/24   → master, worker-01, worker-02
 └── ap-northeast-2b
-    ├── public  10.0.3.0/24   → bastion-b (NAT GW-b)
+    ├── public  10.0.3.0/24   → bastion (NAT GW-b)
     └── private 10.0.4.0/24   → worker-01, worker-02, worker-03
 ```
 
 - **master** は 2a の private subnet に 1 台のみ。HA 用 NLB はなし（controlPlaneEndpoint は master の private IP を直接指定）。
 - **worker** は 2a に 2 台、2b に 3 台。
-- bastion は AZ ごとに 1 台。Ansible の ProxyCommand が各 AZ の private subnet にいるノードに per-AZ で SSH する。
+- bastion は 2b public subnet に 1 台のみ。`cluster-node-sg` が VPC 全域に開いているので、2a private の master へも 2b bastion 経由で SSH する（Ansible の ProxyCommand も 2b 経由）。
 - EFS は両 AZ にマウントターゲットを持つので worker からの NFS マウントは AZ を問わない。
 
 ---

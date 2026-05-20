@@ -29,7 +29,7 @@ Cluster teardown: `make cluster-clear`. Full destroy: `make destroy-all`.
 ## Architecture cheat sheet
 
 **Topology** — single VPC `10.0.0.0/16`, mirrored per AZ (`2a`, `2b`):
-- Public subnets `.1.0/24` (2a) / `.3.0/24` (2b) → bastions + NAT GWs.
+- Public subnets `.1.0/24` (2a) / `.3.0/24` (2b) → NAT GWs both AZs; **bastion lives only in 2b** (`ap-northeast-2b-bastion`). 2a public subnet has no bastion — keeps the operator entry point single.
 - Private subnets `.2.0/24` (2a) / `.4.0/24` (2b) → all cluster nodes; egress via per-AZ NAT.
 - `cluster-node-sg` is wide-open intra-cluster; `bastion-node-sg` opens 22/ICMP only to the operator's current public IP (resolved at apply time via `data.http.my_ip` → `ifconfig.me`). **Re-apply when your IP changes** or SSH will break.
 
@@ -57,7 +57,7 @@ Cluster teardown: `make cluster-clear`. Full destroy: `make destroy-all`.
 `modules/ansible-inventory/inventory.tftpl` → `ansible/inventory.ini` is the single source of truth for group membership and SSH:
 
 - Groups: `master` (singleton — `ap-northeast-2a-master-01`), `ap-northeast-2a-workers`, `ap-northeast-2b-workers`, and a `workers:children` group that unions both worker groups for the worker playbook.
-- Each group reaches its nodes via a per-AZ `ProxyCommand` jumping through that AZ's bastion. `master` uses the **2a** bastion.
+- Every group reaches its nodes via a `ProxyCommand` jumping through the single **2b** bastion (`bastion_b_ip` in the inventory). `cluster-node-sg` is wide-open intra-VPC so the 2b bastion can SSH into the 2a master without an SG hop.
 - Group-level vars `vpc_id` and `master_private_ip` are exported under `[all:vars]` — `aws_lbc` role consumes `vpc_id`; `k8s_prereqs` derives the master entry for `/etc/hosts` via `hostvars[groups['master'][0]].ansible_host`.
 
 When adding a node in Terraform, you must update **both** `terraform/locals.tf` (`nodes` map) and `terraform/modules/ansible-inventory/main.tf` (to pass its IP into the template) and `terraform/modules/ansible-inventory/inventory.tftpl` (to place it in a group).
