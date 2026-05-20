@@ -22,7 +22,7 @@ Cluster teardown: `make cluster-clear`. Full destroy: `make destroy-all`.
 
 ## Out-of-band prerequisites (not created by this repo)
 
-- **IAM role `ktcloud-cluster-node-role`** must already exist — `terraform/iam.tf` uses a `data` source, not a resource. It needs the AWS Load Balancer Controller policy from https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/install/iam_policy.json attached, plus the PassRole permissions referenced in the README. Terraform additionally attaches an inline `ktcloud-cluster-ccm-policy` for the AWS Cloud Controller Manager (EC2/ELB/KMS describe + tag/modify + service-linked-role).
+- **IAM**: all roles/policies are now Terraform-managed (`terraform/iam.tf`, `terraform/irsa.tf`). No pre-created roles required. LBC / CCM / cluster-autoscaler / EBS-CSI / external-secrets all use IRSA roles defined under `terraform/irsa.tf`; the master/static-node instance role (`ktcloud-cluster-node-role`) only carries SSM put/get for the kubeadm join-command parameter.
 - **AWS CLI credentials** for an IAM principal with EC2/VPC/ELB/EFS/IAM-PassRole permissions. Configure via `aws configure`.
 - **S3 bucket** for Terraform remote state (referenced by `backend.tfvars`).
 
@@ -41,7 +41,7 @@ Cluster teardown: `make cluster-clear`. Full destroy: `make destroy-all`.
 
 **Tags** — every cluster node carries `kubernetes.io/cluster/kt-cloud-cluster: owned`; subnets carry `kubernetes.io/role/elb: 1`. AWS Load Balancer Controller relies on these for discovery — preserve them on any new instance/subnet resources.
 
-**Cloud integration** — kubelet runs with `--cloud-provider=external` on every node and is given `--provider-id=aws:///<az>/<instance-id>` at kubeadm init/join time (values pulled from IMDSv2 inside `kubeadm_init` / `kubeadm_join_worker` roles). The out-of-tree AWS CCM (`roles/aws_ccm`) runs as a DaemonSet on the master with `--configure-cloud-routes=false` (Calico handles pod NW) and is what removes the `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint kubelet adds at registration. Pre-setting providerID via kubeletExtraArgs means AWS LBC can resolve Node → EC2 InstanceID immediately even before CCM finishes — this is the load-bearing piece for `targetType: instance` NodePort registration. CCM IAM permissions are attached as an inline policy in `terraform/iam.tf` to the pre-existing `ktcloud-cluster-node-role`.
+**Cloud integration** — kubelet runs with `--cloud-provider=external` on every node and is given `--provider-id=aws:///<az>/<instance-id>` at kubeadm init / ASG join time. For ASG workers the values are written from `terraform/templates/worker-userdata.sh.tftpl` **into `/etc/sysconfig/kubelet`** as `KUBELET_EXTRA_ARGS`, not a `/etc/systemd/system/kubelet.service.d/*.conf` drop-in: the kubelet rpm's `10-kubeadm.conf` ends with `EnvironmentFile=-/etc/sysconfig/kubelet`, and per systemd semantics `EnvironmentFile=` always wins over a drop-in's `Environment=` regardless of file ordering — so a drop-in approach is silently clobbered by the empty sysconfig file. The out-of-tree AWS CCM (`roles/aws_ccm`) runs as a DaemonSet on the master with `--configure-cloud-routes=false` (Calico handles pod NW) and removes the `node.cloudprovider.kubernetes.io/uninitialized:NoSchedule` taint that kubelet adds at registration. Pre-setting providerID via kubelet flags means AWS LBC can resolve Node → EC2 InstanceID immediately even before CCM finishes — this is the load-bearing piece for `targetType: instance` NodePort registration. CCM IAM permissions live in the IRSA role under `terraform/irsa.tf`, not on the node role.
 
 ## Ansible playbook order (`site.yaml` imports)
 
@@ -65,7 +65,7 @@ When adding a node in Terraform, you must update **both** `terraform/locals.tf` 
 ## Conventions to preserve
 
 - **Resource naming**: `ap-northeast-2{a,b}-{master,worker,bastion}-NN`. Keep this; the inventory template, instance tags, and outputs all reference these names.
-- **Hardcoded names that matter**: cluster name `kt-cloud-cluster` (in instance tags and `aws_lbc` role), key name `ktcloud-bastion-node-key` (in `~/.ssh/` and `aws_key_pair`), IAM role `ktcloud-cluster-node-role` (data lookup), EFS creation token `kt_cloud_cluster_efs`. Renaming any of these requires a coordinated multi-file change.
+- **Hardcoded names that matter**: cluster name `kt-cloud-cluster` (in instance tags and `aws_lbc` role), key name `ktcloud-bastion-node-key` (in `~/.ssh/` and `aws_key_pair`), IAM role `ktcloud-cluster-node-role` (Terraform-managed), EFS creation token `kt_cloud_cluster_efs`. Renaming any of these requires a coordinated multi-file change.
 - **Playbook task names are in Japanese.** New tasks should match — keeps `ansible-playbook` output coherent for the team reading it.
 - **`become:` discipline**: `argocd`, `aws_lbc`, `traefik` roles all run Helm against the kubeconfig at `/home/ec2-user/.kube/config` — not as root. Other infra-level roles use `become: true`. Don't flip these without reason.
 

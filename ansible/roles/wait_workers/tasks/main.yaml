@@ -4,18 +4,70 @@
 # ============================================================
 # 旧構成では Ansible が SSH で worker に入り kubeadm join を打っていた。
 # ASG 化後は worker の UserData が SSM 経由で自走 join する。Ansible 側は
-# 「想定数の Ready ノードが揃うまで待つ」だけ。
+# 「ASG の現在 desired_capacity 合計と等しい数の Ready ノードが揃うまで待つ」だけ。
 #
-# 期待 Ready 数: worker_expected_count + 1 (master)
+# 重要: desired_capacity は CA で動くため Ansible 変数ではなく AWS API を
+# 毎回叩いて参照する。Ansible var の取り違えや CA scale-up 後の再 run で
+# ハングするのを避ける。
+#
+# 期待 Ready ノード数 = sum(ASG.DesiredCapacity) + 1 (master)
+#
+# 実装上のポイント:
+#   - master の IAM Role には autoscaling:Describe を付けていないため、
+#     ASG describe は `delegate_to: localhost` で operator credentials で行う。
+#   - Ready 判定の kubectl は master 上 (admin.conf があるので) で行う。
 
+- name: ASG desired_capacity の合計を取得 (operator credentials)
+  ansible.builtin.shell: |
+    set -o pipefail
+    aws autoscaling describe-auto-scaling-groups \
+      --region "{{ aws_region }}" \
+      --auto-scaling-group-names {{ worker_asg_names | join(' ') }} \
+      --query 'sum(AutoScalingGroups[].DesiredCapacity)' \
+      --output text
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: asg_desired_sum
+  changed_when: false
+
+- name: 期待 Ready ノード数を確定
+  ansible.builtin.set_fact:
+    worker_expected_count: "{{ asg_desired_sum.stdout | int }}"
+    total_expected_ready: "{{ (asg_desired_sum.stdout | int) + 1 }}"
+
+- name: 期待ノード数を表示
+  ansible.builtin.debug:
+    msg: "Expecting {{ total_expected_ready }} Ready nodes ({{ worker_expected_count }} workers across {{ worker_asg_names | length }} ASGs + 1 master)"
+
+# ------------------------------------------------------------
+# Ready 判定:
+#   - .conditions[?(@.type=="Ready")].status で順序非依存に取得
+#     (旧版の .conditions[-1] は順序依存で壊れやすい)
+#   - "True" の数を数え、期待数と比較
+#   - 各リトライで現在数と未 Ready ノード名を stderr に出して可視化する
+# ------------------------------------------------------------
 - name: 期待ノード数の Ready が揃うまで待つ
   ansible.builtin.shell: |
     set -o pipefail
-    READY=$(kubectl --kubeconfig={{ admin_conf_path }} get nodes \
-      -o jsonpath='{range .items[?(@.status.conditions[-1].type=="Ready")]}{.status.conditions[-1].status}{"\n"}{end}' \
-      | grep -c '^True$' || true)
-    echo "Ready=$READY expected={{ worker_expected_count + 1 }}"
-    [ "$READY" -ge "{{ worker_expected_count + 1 }}" ]
+    EXPECTED={{ total_expected_ready }}
+
+    STATUS=$(kubectl --kubeconfig={{ admin_conf_path }} get nodes \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}')
+
+    READY=$(echo "$STATUS" | grep -c '=True$' || true)
+    NOT_READY=$(echo "$STATUS" | grep -v '=True$' | sed 's/^/  - /')
+
+    {
+      echo "Ready=$READY / Expected=$EXPECTED"
+      if [ -n "$NOT_READY" ]; then
+        echo "Not Ready nodes:"
+        echo "$NOT_READY"
+      fi
+    } >&2
+
+    [ "$READY" -ge "$EXPECTED" ]
   args:
     executable: /bin/bash
   register: ready_check

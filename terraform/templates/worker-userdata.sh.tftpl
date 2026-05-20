@@ -103,15 +103,18 @@ fi
 # これに `--cri-socket` と `--node-name` と provider-id 用の kubelet flag を足す。
 
 # ------------------------------------------------------------
-# Step 4: kubelet drop-in で provider-id / cloud-provider を渡す
+# Step 4: kubelet に provider-id / cloud-provider を渡す
 # ------------------------------------------------------------
-# kubeadm の JoinConfiguration を組むのではなく kubelet 起動引数で渡す方が
-# UserData では取り回しやすい。kubeadm join 後に kubelet が読む drop-in を
-# 先に置いておけば、kubelet 初回起動時から効く。
-mkdir -p /etc/systemd/system/kubelet.service.d
-cat >/etc/systemd/system/kubelet.service.d/20-aws-cloud-provider.conf <<EOF
-[Service]
-Environment="KUBELET_EXTRA_ARGS=--cloud-provider=external --provider-id=$PROVIDER_ID --hostname-override=$HOSTNAME"
+# kubelet パッケージ同梱の 10-kubeadm.conf には末尾で
+#   EnvironmentFile=-/etc/sysconfig/kubelet
+# が指定されており、systemd 仕様上 EnvironmentFile は
+# Environment= より常に後勝ち（drop-in の番号に関係なく）になる。
+# 従って /etc/systemd/system/kubelet.service.d/20-* に Environment= で
+# KUBELET_EXTRA_ARGS を書いても、/etc/sysconfig/kubelet の
+# KUBELET_EXTRA_ARGS= (空) に上書きされて効かない。
+# 正しくは /etc/sysconfig/kubelet に直接書き込む。
+cat >/etc/sysconfig/kubelet <<EOF
+KUBELET_EXTRA_ARGS=--cloud-provider=external --provider-id=$PROVIDER_ID --hostname-override=$HOSTNAME
 EOF
 systemctl daemon-reload
 

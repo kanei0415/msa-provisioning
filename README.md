@@ -188,7 +188,7 @@ make destroy-all     # cluster-clear → terraform destroy
 ## 既知の制約
 
 - aws-load-balancer-controller の webhook が ArgoCD インストールを阻害する場合があります。 `argocd` role は事前に webhook を削除する task を持っているのでそのまま運用してください。
-- terraform 内の `iam.tf` は **既存の IAM Role `ktcloud-cluster-node-role`** を data source で参照します。事前に Role を作成し、 [AWS LBC IAM policy](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/main/docs/install/iam_policy.json) と PassRole の権限を付与しておく必要があります。
+- IAM Role / Policy はすべて Terraform 管理に移行済みです（旧構成で要求していた `ktcloud-cluster-node-role` の事前作成は不要になりました）。LBC / CCM / cluster-autoscaler / EBS-CSI / external-secrets はそれぞれ IRSA Role を `terraform/irsa.tf` で作成し、`make tf-apply` 一発で揃います。
 - bastion SG は `ifconfig.me` で解決される現在のグローバル IP のみを許可します。IP が変わったら `terraform apply` を再実行してください。
 - シングル master 構成です。control plane は SPOF。master ノードが落ちると apiserver が止まります。学習・開発用途に最適化されています。
 

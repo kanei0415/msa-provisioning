@@ -21,9 +21,5 @@ argocd_root_path: "/argocd"
 aws_lbc_namespace: "kube-system"
 aws_ccm_namespace: "kube-system"
 
-# ASG 化により Traefik は本構成で常時 NLB を立てる前提（destroy-all の cleanup 対象でもある）
-deploy_traefik: true
-traefik_namespace: "traefik"
-
-# Terraform 側 var.worker_asg_desired_per_az と揃える（wait_workers の見積もりに使う）
-worker_asg_desired_per_az: 2
+# wait_workers は AWS API で各 ASG の DesiredCapacity を毎回引くので Ansible 側に
+# 期待ノード数の静的設定は不要 (CA scale 後に再 run しても破綻しないようにするため)。

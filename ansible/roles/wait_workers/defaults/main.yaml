@@ -1,3 +1,0 @@
----
-# AZ あたりの worker_asg_desired_per_az x 2 AZ。Terraform の var に合わせて使用側で上書き可。
-worker_expected_count: 4

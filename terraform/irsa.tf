@@ -273,6 +273,35 @@ resource "aws_iam_role_policy" "lbc" {
   policy = data.http.lbc_iam_policy.response_body
 }
 
+# 公式ポリシー (v2.8.1 pin) には含まれていないが、現在動いている
+# aws-load-balancer-controller v3.x が要求する追加 action を補完する。
+# Reconciler error: AccessDenied elasticloadbalancing:DescribeListenerAttributes
+# などで TargetGroupBinding が作られず Traefik NLB が空ターゲットになる事象を回避。
+resource "aws_iam_role_policy" "lbc_supplement" {
+  name = "${var.cluster_name}-lbc-supplement"
+  role = aws_iam_role.lbc.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ELBv2NewerActions"
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:DescribeListenerAttributes",
+          "elasticloadbalancing:ModifyListenerAttributes",
+          "elasticloadbalancing:DescribeCapacityReservation",
+          "elasticloadbalancing:ModifyCapacityReservation",
+          "elasticloadbalancing:DescribeTrustStoreAssociations",
+          "elasticloadbalancing:DescribeTrustStoreRevocations",
+          "elasticloadbalancing:DescribeSecurityPolicies",
+          "elasticloadbalancing:ModifyIpPools",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ============================================================
 # IRSA Role: Cluster Autoscaler
 # ============================================================

@@ -2,7 +2,7 @@
 # ============================================================
 # クラスタ アドオン（IRSA + ASG 対応版）
 # ============================================================
-# 順序が結構厳密なので注意:
+# 順序:
 #
 #   1) helm                       : helm binary を master に配置
 #   2) irsa_oidc                  : JWKS を S3 に上げ、apiserver の IRSA flag を確認
@@ -10,12 +10,17 @@
 #   4) aws_ccm  (IRSA)            : node の uninitialized taint を除去
 #                                   ── ここで CoreDNS が Running になる
 #   5) (wait kube-system Ready)
-#   6) aws_lbc       (IRSA)
-#   7) aws_ebs_csi   (IRSA)
-#   8) cluster_autoscaler (IRSA)
-#   9) wait_workers               : ASG worker が join するのを待つ
-#  10) argocd
-#  11) traefik (deploy_traefik=true)
+#   6) aws_lbc       (IRSA)       : ALB/NLB を払い出すための controller
+#   7) wait_workers               : ASG worker が join するのを待つ
+#   8) argocd                     : root-app が以下を GitOps で投入
+#                                     - aws-ebs-csi-driver
+#                                     - cluster-autoscaler
+#                                     - external-secrets / istio / kafka / etc
+#
+# aws-ebs-csi-driver と cluster-autoscaler は ArgoCD root-app
+# (ktcloud-k8s-argocd-manifest/Setup/Addons-app.yaml) が wave 0/1 で投入する。
+# Ansible で同名 Helm release を入れると selfHeal/prune と衝突するので
+# ここからは外している。IRSA Role 側 (terraform/irsa.tf) は維持する。
 
 - name: 事前段 — Helm / IRSA OIDC / Pod Identity Webhook / CCM
   hosts: master
@@ -32,7 +37,7 @@
     - role: aws_ccm
       tags: [ccm, aws_ccm]
 
-- name: 本段 — LBC / EBS CSI / Cluster Autoscaler / wait / ArgoCD / Traefik
+- name: 本段 — LBC / wait_workers / ArgoCD
   hosts: master
   become: true
   vars_files:
@@ -58,16 +63,7 @@
   roles:
     - role: aws_lbc
       tags: [lbc, aws_lbc]
-    - role: aws_ebs_csi
-      tags: [ebs_csi, aws_ebs_csi]
-    - role: cluster_autoscaler
-      tags: [ca, cluster_autoscaler]
     - role: wait_workers
       tags: [wait_workers]
-      vars:
-        worker_expected_count: "{{ (worker_asg_names | length) * worker_asg_desired_per_az | default(2) }}"
     - role: argocd
       tags: [argocd]
-    - role: traefik
-      tags: [traefik]
-      when: deploy_traefik | bool

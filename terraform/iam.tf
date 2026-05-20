@@ -4,25 +4,36 @@
 # 旧構成では node instance profile に CCM/LBC の権限を全部寄せていたが、
 # IRSA 移行により Pod 側が assume するロールに権限を移し、ノード自体は
 #   - IMDSv2 (default)
-#   - SSM Parameter Store の join-command 読み取り（worker のみ）
-# だけにする。
+#   - SSM Parameter Store の join-command 読み書き（master / worker）
+# だけにする。LBC / CCM 等の AWS API 権限は irsa.tf 側へ移動済み。
 #
-# 事前外部前提の `ktcloud-cluster-node-role` は引き続き data lookup する。
-# 旧 inline policy (ccm-policy) は本ファイルから削除し、必要な権限は
-# irsa.tf 側の IRSA role に inline policy として付け替える。
+# 旧来は `ktcloud-cluster-node-role` を AWS コンソールで先に作っておく
+# 事前条件としていたが、それを廃して Terraform 側で完全に管理する。
 
-data "aws_iam_role" "ktcloud_cluster_node_role" {
-  name = "ktcloud-cluster-node-role"
+resource "aws_iam_role" "ktcloud_cluster_node_role" {
+  name        = "ktcloud-cluster-node-role"
+  description = "Instance role for master / static nodes (SSM join-command put/get only)"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "ktcloud-cluster-node-role"
+  })
 }
 
 # ------------------------------------------------------------
 # master / 静的ノード用の instance profile
 # ------------------------------------------------------------
-# master ノードは control-plane として動くだけで AWS API は基本叩かない
-# （CCM 等は IRSA で動く）。互換性のため既存の data role をそのまま使う。
 resource "aws_iam_instance_profile" "ktcloud_cluster_node_profile" {
   name = "ktcloud_cluster_node_profile"
-  role = data.aws_iam_role.ktcloud_cluster_node_role.name
+  role = aws_iam_role.ktcloud_cluster_node_role.name
 }
 
 # ------------------------------------------------------------
@@ -107,7 +118,7 @@ resource "aws_iam_instance_profile" "ktcloud_worker_node_profile" {
 # kubeadm init 後、Ansible (roles/kubeadm_init) が master 上で
 # `aws ssm put-parameter` を叩いて join-command を書き込むため、master 側
 # にも書き込み権限が必要。
-# 既存外部前提の ktcloud-cluster-node-role に inline で attach する。
+# Terraform 管理の ktcloud-cluster-node-role に inline で attach する。
 data "aws_iam_policy_document" "master_ssm_join_write" {
   statement {
     sid     = "WriteJoinCommandSSMParam"
@@ -133,6 +144,6 @@ data "aws_iam_policy_document" "master_ssm_join_write" {
 
 resource "aws_iam_role_policy" "master_ssm_join_write" {
   name   = "${var.cluster_name}-master-ssm-join-write"
-  role   = data.aws_iam_role.ktcloud_cluster_node_role.name
+  role   = aws_iam_role.ktcloud_cluster_node_role.name
   policy = data.aws_iam_policy_document.master_ssm_join_write.json
 }
