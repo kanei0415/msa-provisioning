@@ -238,12 +238,100 @@ refresh-join-command: ## master 上で新しい join token を生成して SSM P
 	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini playbooks/control-plane.yaml --tags init
 
 # ============================================================
-# Destroy 系: drain LB → drain PVC → ASG=0 → kubeadm reset → terraform destroy
+# Destroy 系: drain LB → AWS API LBC sweep → ASG=0 → kubeadm reset → terraform destroy
 # ============================================================
 
 .PHONY: drain-lbs
 drain-lbs: ## cluster 上の Service type=LoadBalancer / Ingress / PVC を全削除（LBC NLB/ALB + EBS CSI 解放）
 	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini playbooks/clean.yaml --tags drain || true
+
+# ------------------------------------------------------------
+# aws-lbc-cleanup
+# ------------------------------------------------------------
+# drain-lbs だけでは「LBC が ALB の delete を reconcile し切る前に Ansible 側が
+# 進んでしまう」「LBC pod が落ちている／cluster が壊れている」などで AWS 上に
+# ALB/NLB と ENI が残り、その ENI が subnet/VPC を terraform destroy から守って
+# しまう。AWS LBC が作るリソースは全部 `elbv2.k8s.aws/cluster=<cluster>` タグを
+# 持つので、そのタグ起点で API 直叩きで掃除する（cluster の生死に依存しない）。
+#
+# 対象:
+#   - elasticloadbalancing:loadbalancer (ALB / NLB)
+#   - elasticloadbalancing:targetgroup
+#   - ec2:security-group (LBC が作る frontend / backend SG)
+#
+# ENI は LB delete の副作用で AWS 側が自動 detach/delete するので個別に触らない。
+# ------------------------------------------------------------
+.PHONY: aws-lbc-cleanup
+aws-lbc-cleanup: ## AWS API で LBC 生成 ALB/NLB/TG/SG をクラスタタグ起点で強制削除（tf destroy 前段の保険）
+	@TAG_KEY=elbv2.k8s.aws/cluster; \
+	 TAG_VAL=$(CLUSTER_NAME); \
+	 REGION=$(AWS_REGION); \
+	 printf "$(CYAN)Look up LBC resources (tag $$TAG_KEY=$$TAG_VAL)$(RESET)\n"; \
+	 LB_ARNS=$$(aws resourcegroupstaggingapi get-resources \
+	   --region $$REGION \
+	   --tag-filters "Key=$$TAG_KEY,Values=$$TAG_VAL" \
+	   --resource-type-filters elasticloadbalancing:loadbalancer \
+	   --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); \
+	 if [ -n "$$LB_ARNS" ]; then \
+	   for ARN in $$LB_ARNS; do \
+	     printf "  delete LB %s\n" "$$ARN"; \
+	     aws elbv2 delete-load-balancer --region $$REGION --load-balancer-arn "$$ARN" || true; \
+	   done; \
+	   printf "$(CYAN)LB delete 完了を最大 5min 待機 (ENI 解放まで)$(RESET)\n"; \
+	   for ARN in $$LB_ARNS; do \
+	     for i in $$(seq 1 30); do \
+	       if ! aws elbv2 describe-load-balancers --region $$REGION --load-balancer-arns "$$ARN" >/dev/null 2>&1; then \
+	         printf "  gone: %s\n" "$$ARN"; break; \
+	       fi; \
+	       sleep 10; \
+	     done; \
+	   done; \
+	 else \
+	   printf "  no LBC-managed load balancers\n"; \
+	 fi; \
+	 TG_ARNS=$$(aws resourcegroupstaggingapi get-resources \
+	   --region $$REGION \
+	   --tag-filters "Key=$$TAG_KEY,Values=$$TAG_VAL" \
+	   --resource-type-filters elasticloadbalancing:targetgroup \
+	   --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); \
+	 if [ -n "$$TG_ARNS" ]; then \
+	   for ARN in $$TG_ARNS; do \
+	     printf "  delete TG %s\n" "$$ARN"; \
+	     aws elbv2 delete-target-group --region $$REGION --target-group-arn "$$ARN" || true; \
+	   done; \
+	 fi; \
+	 SG_IDS=$$(aws resourcegroupstaggingapi get-resources \
+	   --region $$REGION \
+	   --tag-filters "Key=$$TAG_KEY,Values=$$TAG_VAL" \
+	   --resource-type-filters ec2:security-group \
+	   --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null \
+	   | awk -F'/' '{print $$NF}'); \
+	 if [ -n "$$SG_IDS" ]; then \
+	   printf "$(CYAN)revoke rules → delete SG (LBC 生成)$(RESET)\n"; \
+	   for SG in $$SG_IDS; do \
+	     ING=$$(aws ec2 describe-security-groups --region $$REGION --group-ids "$$SG" \
+	            --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null); \
+	     if [ -n "$$ING" ] && [ "$$ING" != "null" ] && [ "$$ING" != "[]" ]; then \
+	       aws ec2 revoke-security-group-ingress --region $$REGION --group-id "$$SG" --ip-permissions "$$ING" >/dev/null 2>&1 || true; \
+	     fi; \
+	     EGR=$$(aws ec2 describe-security-groups --region $$REGION --group-ids "$$SG" \
+	            --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null); \
+	     if [ -n "$$EGR" ] && [ "$$EGR" != "null" ] && [ "$$EGR" != "[]" ]; then \
+	       aws ec2 revoke-security-group-egress --region $$REGION --group-id "$$SG" --ip-permissions "$$EGR" >/dev/null 2>&1 || true; \
+	     fi; \
+	   done; \
+	   for SG in $$SG_IDS; do \
+	     for i in $$(seq 1 12); do \
+	       if aws ec2 delete-security-group --region $$REGION --group-id "$$SG" 2>/dev/null; then \
+	         printf "  deleted SG %s\n" "$$SG"; break; \
+	       fi; \
+	       printf "  SG %s 削除待ち (try %s/12)\n" "$$SG" "$$i"; sleep 10; \
+	     done; \
+	   done; \
+	 else \
+	   printf "  no LBC-managed security groups\n"; \
+	 fi; \
+	 printf "$(GREEN)LBC cleanup done$(RESET)\n"
 
 .PHONY: asg-scale-zero
 asg-scale-zero: ## worker ASG を min=0/desired=0 にスケール（terraform destroy 前に instance 解放）
@@ -273,15 +361,17 @@ cluster-clear: ## drain LB/PVC + master kubeadm reset（cluster だけリセッ�
 	cd $(ANSIBLE_DIR) && ansible-playbook -i inventory.ini playbooks/clean.yaml
 
 .PHONY: destroy-all
-destroy-all: ## drain LB+PVC → ASG=0 → terraform destroy → 古い AMI 掃除
+destroy-all: ## drain LB+PVC → AWS LBC sweep → ASG=0 → terraform destroy → 古い AMI 掃除
 	@printf "$(RED)WARNING: cluster と AWS インフラを完全に破棄します$(RESET)\n"
-	@printf "$(CYAN)[1/4] cluster 上の LB + PVC を drain (LBC NLB/ALB + EBS CSI volume の解放)$(RESET)\n"
+	@printf "$(CYAN)[1/5] cluster 上の LB + PVC を drain (LBC が ALB を delete 出来る間に reconcile させる)$(RESET)\n"
 	$(MAKE) drain-lbs || true
-	@printf "$(CYAN)[2/4] ASG を 0 にスケールして worker EC2 を terminate$(RESET)\n"
+	@printf "$(CYAN)[2/5] AWS API で LBC 生成 ALB/NLB/TG/SG を強制掃除 (drain 取りこぼし対策: ENI 残留で subnet/VPC 削除が詰まるのを防ぐ)$(RESET)\n"
+	$(MAKE) aws-lbc-cleanup || true
+	@printf "$(CYAN)[3/5] ASG を 0 にスケールして worker EC2 を terminate$(RESET)\n"
 	$(MAKE) asg-scale-zero || true
-	@printf "$(CYAN)[3/4] terraform destroy (master / bastion / VPC / EFS / IRSA Role / OIDC bucket 等)$(RESET)\n"
+	@printf "$(CYAN)[4/5] terraform destroy (master / bastion / VPC / EFS / IRSA Role / OIDC bucket 等)$(RESET)\n"
 	$(MAKE) tf-destroy
-	@printf "$(CYAN)[4/4] 古い Packer 製 AMI / snapshot を整理$(RESET)\n"
+	@printf "$(CYAN)[5/5] 古い Packer 製 AMI / snapshot を整理$(RESET)\n"
 	$(MAKE) ami-clean-old || true
 	@printf "$(GREEN)完了。次に立て直すときは 'make all'。$(RESET)\n"
 

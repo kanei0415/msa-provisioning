@@ -58,8 +58,10 @@ resource "aws_secretsmanager_secret" "msa" {
   name        = "${var.cluster_name}/${each.value.name}"
   description = "MSA secrets for ${each.value.name} (read by ESO via IRSA)"
 
-  # 削除時の復元期間 (0 = 即時削除)。dev 用途なので短めに。
-  recovery_window_in_days = 7
+  # 削除時の復元期間。dev cluster は destroy → apply を頻繁に回すので即時削除 (=0)。
+  # 0 以外だと同名 secret が grace 期間中に残り、次の apply が
+  # "scheduled for deletion" で失敗する。
+  recovery_window_in_days = 0
 
   tags = merge(local.common_tags, {
     Name    = "${var.cluster_name}-${each.value.name}"
