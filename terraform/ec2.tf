@@ -30,7 +30,7 @@ resource "aws_instance" "kt_cloud_vpc_node" {
     EOF
 
   root_block_device {
-    volume_size = each.value.role == "bastion" ? 10 : 30
+    volume_size = 30
     volume_type = "gp3"
     encrypted   = true
   }

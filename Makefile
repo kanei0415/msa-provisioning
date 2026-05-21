@@ -390,7 +390,9 @@ get-kubeconfig: ## master から admin.conf をローカル ./.kube/config に�
 kube-tunnel: ## bastion 経由で master:6443 を localhost:6443 にトンネル（フォアグラウンド）
 	@printf "$(CYAN)bastion=$(BASTION_B_IP) master=$(MASTER_PRIV_IP)$(RESET)\n"
 	ssh -N -L 6443:$(MASTER_PRIV_IP):6443 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-	    -i $(SSH_KEY) -J ec2-user@$(BASTION_B_IP) ec2-user@$(MASTER_PRIV_IP)
+	    -i $(SSH_KEY) \
+	    -o ProxyCommand="ssh -W %h:%p -q -i $(SSH_KEY) ec2-user@$(BASTION_B_IP)" \
+	    ec2-user@$(MASTER_PRIV_IP)
 
 # ============================================================
 # 検証 / 状態
@@ -399,7 +401,9 @@ kube-tunnel: ## bastion 経由で master:6443 を localhost:6443 にトンネル
 .PHONY: verify
 verify: ## kubectl get nodes + pods で全体状態を確認（master 経由）
 	@printf "$(CYAN)master=$(MASTER_PRIV_IP) via bastion=$(BASTION_B_IP)$(RESET)\n"
-	ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) -J ec2-user@$(BASTION_B_IP) ec2-user@$(MASTER_PRIV_IP) \
+	ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) \
+	    -o ProxyCommand="ssh -W %h:%p -q -i $(SSH_KEY) ec2-user@$(BASTION_B_IP)" \
+	    ec2-user@$(MASTER_PRIV_IP) \
 	  'sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes -o wide; echo; sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -A'
 
 .PHONY: verify-asg
@@ -421,7 +425,9 @@ verify-irsa: ## OIDC issuer / S3 公開状況 / 各 IRSA Role を表示
 
 .PHONY: argocd-password
 argocd-password: ## ArgoCD admin の初期パスワードを表示
-	@ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) -J ec2-user@$(BASTION_B_IP) ec2-user@$(MASTER_PRIV_IP) \
+	@ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) \
+	    -o ProxyCommand="ssh -W %h:%p -q -i $(SSH_KEY) ec2-user@$(BASTION_B_IP)" \
+	    ec2-user@$(MASTER_PRIV_IP) \
 	  "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf -n $(ARGOCD_NS) get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
 
 .PHONY: argocd-port-forward
@@ -429,10 +435,14 @@ argocd-port-forward: ## ArgoCD UI を localhost:8443 にフォワード
 	@printf "$(CYAN)master=$(MASTER_PRIV_IP) via $(BASTION_B_IP)$(RESET)\n"
 	@PW=$$($(MAKE) -s argocd-password 2>/dev/null); \
 	  printf "$(GREEN)→ http://localhost:8443/argocd  (admin / $$PW)$(RESET)\n"
-	@ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) -J ec2-user@$(BASTION_B_IP) ec2-user@$(MASTER_PRIV_IP) \
+	@ssh -o StrictHostKeyChecking=no -i $(SSH_KEY) \
+	    -o ProxyCommand="ssh -W %h:%p -q -i $(SSH_KEY) ec2-user@$(BASTION_B_IP)" \
+	    ec2-user@$(MASTER_PRIV_IP) \
 	    'sudo pkill -9 -f "kubectl .*port-forward.*svc/argocd-server" 2>/dev/null; exit 0' >/dev/null 2>&1 || true
 	ssh -tt -L 8443:127.0.0.1:8443 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-	    -i $(SSH_KEY) -J ec2-user@$(BASTION_B_IP) ec2-user@$(MASTER_PRIV_IP) \
+	    -i $(SSH_KEY) \
+	    -o ProxyCommand="ssh -W %h:%p -q -i $(SSH_KEY) ec2-user@$(BASTION_B_IP)" \
+	    ec2-user@$(MASTER_PRIV_IP) \
 	    "sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf -n $(ARGOCD_NS) port-forward --address 127.0.0.1 svc/argocd-server 8443:80"
 
 # ============================================================
