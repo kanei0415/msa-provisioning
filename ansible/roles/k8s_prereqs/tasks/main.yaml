@@ -43,6 +43,15 @@
     - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
     - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
     - { name: "net.ipv4.ip_forward", value: "1" }
+    # Elasticsearch (platform logging stack + SonarQube の embedded ES) は
+    # 起動時に大量の memory-map 領域を要求するため vm.max_map_count を引き上げる。
+    # 未設定だと ES が bootstrap check で起動失敗する。AMI に焼き込むことで
+    # master と ASG worker の全ノードへ適用される。
+    - { name: "vm.max_map_count", value: "262144" }
+    # 多数の Pod / コンテナ (Prometheus, Kafka, Istio sidecar 等) が大量の
+    # inotify watch を張るため上限を引き上げる。
+    - { name: "fs.inotify.max_user_instances", value: "8192" }
+    - { name: "fs.inotify.max_user_watches", value: "524288" }
 
 - name: /etc/hosts に master のエントリを追加
   ansible.builtin.lineinfile:

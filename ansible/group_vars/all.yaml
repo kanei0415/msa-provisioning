@@ -14,7 +14,7 @@ helm_version: "v3.14.0"
 
 argocd_namespace: "argocd"
 argocd_root_app_repo: "https://github.com/kanei0415/ktcloud-k8s-argocd-manifest.git"
-argocd_root_app_path: "Setup"
+argocd_root_app_path: "bootstrap"
 argocd_root_path: "/argocd"
 
 # aws_region は terraform inventory が all:vars に流すのでこちらは override 用 fallback

@@ -18,7 +18,7 @@
 #                                     - external-secrets / istio / kafka / etc
 #
 # aws-ebs-csi-driver と cluster-autoscaler は ArgoCD root-app
-# (ktcloud-k8s-argocd-manifest/Setup/Addons-app.yaml) が wave 0/1 で投入する。
+# (ktcloud-k8s-argocd-manifest/bootstrap/platform.yaml) が wave 0/1 で投入する。
 # Ansible で同名 Helm release を入れると selfHeal/prune と衝突するので
 # ここからは外している。IRSA Role 側 (terraform/irsa.tf) は維持する。
 
