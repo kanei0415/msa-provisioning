@@ -56,7 +56,7 @@ variable "worker_asg_min_per_az" {
 
 variable "worker_asg_max_per_az" {
   type        = number
-  default     = 5
+  default     = 10
   description = "AZ あたり worker ASG の最大台数。CA がここまでしか scale-up しない。"
 }
 
