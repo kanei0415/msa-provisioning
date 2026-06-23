@@ -47,6 +47,9 @@ locals {
       name = "user-api-gateway"
       keys = {
         JWT_SECRET = "CHANGE_ME_JWT"
+        # The gateway's Bucket4j rate limiter connects to inventory-redis, so it
+        # needs the same REDIS_PASSWORD (ESO dataFrom-extracts every key here).
+        REDIS_PASSWORD = "CHANGE_ME_REDIS"
       }
     }
   }
